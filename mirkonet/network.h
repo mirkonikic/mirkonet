@@ -91,7 +91,7 @@ public:
         _udpGossip.write(buf, off);
         _udpGossip.endPacket();
         if (tx.type == TxType::DEPLOY)
-            Serial0.printf("[Net] Broadcast DEPLOY tx '%s' (%d bytes)\n", tx.name, (int)off);
+            Serial0.printf("[Net] Broadcast DEPLOY tx '%s' (%d bytes)\n", tx.data, (int)off);
     }
 
     void broadcastFullBlock(const Block& blk) {
@@ -233,18 +233,19 @@ public:
     static void serializeTx(const Transaction& tx, uint8_t* buf, size_t& off) {
         buf[off++] = (uint8_t)tx.type;
         memcpy(buf+off, tx.sender.id, 6); off += 6;
+        memcpy(buf+off, tx.to.id, 6); off += 6;
         memcpy(buf+off, &tx.nonce, 4); off += 4;
         memcpy(buf+off, &tx.timestamp, 4); off += 4;
         memcpy(buf+off, &tx.value, 4); off += 4;
-        memcpy(buf+off, tx.target, 16); off += 16;
-        memcpy(buf+off, tx.name, 16); off += 16;
-        memcpy(buf+off, tx.voteTarget.id, 6); off += 6;
+        memcpy(buf+off, &tx.gasLimit, 4); off += 4;
+        memcpy(buf+off, &tx.gasPrice, 4); off += 4;
+        memcpy(buf+off, tx.data, 16); off += 16;
         buf[off++] = tx.argCount;
         for (int i = 0; i < tx.argCount; i++)
             memcpy(buf+off, &tx.args[i], 4), off += 4;
 
         if (tx.type == TxType::DEPLOY) {
-            auto* entry = g_deployCache.find(tx.name);
+            auto* entry = g_deployCache.find(tx.data);
             if (entry) {
                 memcpy(buf+off, &entry->codeLen, 2); off += 2;
                 memcpy(buf+off, entry->codeHash.bytes, HASH_SIZE); off += HASH_SIZE;
@@ -262,12 +263,13 @@ public:
         if (len < 1) return;
         tx.type = (TxType)data[off++];
         if (off+6<=len) { memcpy(tx.sender.id, data+off, 6); off+=6; }
+        if (off+6<=len) { memcpy(tx.to.id, data+off, 6); off+=6; }
         if (off+4<=len) { memcpy(&tx.nonce, data+off, 4); off+=4; }
         if (off+4<=len) { memcpy(&tx.timestamp, data+off, 4); off+=4; }
         if (off+4<=len) { memcpy(&tx.value, data+off, 4); off+=4; }
-        if (off+16<=len) { memcpy(tx.target, data+off, 16); off+=16; }
-        if (off+16<=len) { memcpy(tx.name, data+off, 16); off+=16; }
-        if (off+6<=len) { memcpy(tx.voteTarget.id, data+off, 6); off+=6; }
+        if (off+4<=len) { memcpy(&tx.gasLimit, data+off, 4); off+=4; }
+        if (off+4<=len) { memcpy(&tx.gasPrice, data+off, 4); off+=4; }
+        if (off+16<=len) { memcpy(tx.data, data+off, 16); off+=16; }
         if (off+1<=len) { tx.argCount = data[off++]; }
         if (tx.argCount > MVM_MAX_ARGS)
             tx.argCount = MVM_MAX_ARGS;
@@ -280,12 +282,12 @@ public:
             memcpy(&codeLen, data+off, 2); off += 2;
             memcpy(codeHash.bytes, data+off, HASH_SIZE); off += HASH_SIZE;
             if (codeLen > 0)
-                g_deployCache.storeMeta(tx.name, codeLen, codeHash);
+                g_deployCache.storeMeta(tx.data, codeLen, codeHash);
         }
     }
 
     static size_t txSerializedSize(const Transaction& tx) {
-        size_t sz = 1 + 6 + 4 + 4 + 4 + 16 + 16 + 6 + 1 + tx.argCount * 4;
+        size_t sz = 1 + 6 + 6 + 4 + 4 + 4 + 4 + 4 + 16 + 1 + tx.argCount * 4;
         if (tx.type == TxType::DEPLOY)
             sz += 2 + HASH_SIZE;
         return sz;

@@ -2,12 +2,14 @@
 #include <Arduino.h>
 #include "config.h"
 
-#include "soc/gpio_struct.h"
-
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
     #define HAS_RGB_LED 1
-    #define RGB_LED_PIN 48
-    #include <driver/rmt.h>
+    // Use RGB_BUILTIN if defined by the board, else default to GPIO 48
+    #if defined(RGB_BUILTIN)
+        #define RGB_LED_PIN RGB_BUILTIN
+    #else
+        #define RGB_LED_PIN 48
+    #endif
 #else
     #define HAS_RGB_LED 0
     #define BUILTIN_LED_PIN 2
@@ -33,7 +35,7 @@ public:
         pinMode(RGB_LED_PIN, OUTPUT);
         _useRGB = true;
         setRGB(0, 0, 0);
-        Serial.println("[LED] RGB LED on GPIO48 (ESP32-S3)");
+        Serial.println("[LED] RGB NeoPixel on GPIO" + String(RGB_LED_PIN) + " (ESP32-S3)");
 #else
         pinMode(BUILTIN_LED_PIN, OUTPUT);
         digitalWrite(BUILTIN_LED_PIN, LOW);
@@ -198,28 +200,13 @@ private:
 
 #if HAS_RGB_LED
     void setRGB(uint8_t r, uint8_t g, uint8_t b) {
-        #if defined(neopixelWrite)
-            neopixelWrite(RGB_LED_PIN, r, g, b);
-        #else
-            uint8_t pixels[3] = { g, r, b };
-            portDISABLE_INTERRUPTS();
-            for (int byte = 0; byte < 3; byte++) {
-                for (int bit = 7; bit >= 0; bit--) {
-                    if (pixels[byte] & (1 << bit)) {
-                        GPIO.out_w1ts = (1 << RGB_LED_PIN);
-                        delayMicroseconds(1);
-                        GPIO.out_w1tc = (1 << RGB_LED_PIN);
-                    } else {
-                        GPIO.out_w1ts = (1 << RGB_LED_PIN);
-                        asm volatile("nop; nop; nop;");
-                        GPIO.out_w1tc = (1 << RGB_LED_PIN);
-                        delayMicroseconds(1);
-                    }
-                }
-            }
-            portENABLE_INTERRUPTS();
-            delayMicroseconds(80);
-        #endif
+        // neopixelWrite() is available in Arduino ESP32 core >= 2.0 for S3.
+        // It uses the RMT peripheral internally and handles pin > 31 correctly.
+        // The previous bit-banging fallback was broken for GPIO 48 because
+        // GPIO.out_w1ts only controls pins 0-31 (pin 48 needs GPIO.out1_w1ts).
+        // The old #if defined(neopixelWrite) check also failed because
+        // neopixelWrite is a function declaration, not a preprocessor macro.
+        neopixelWrite(RGB_LED_PIN, r, g, b);
     }
 #endif
 };

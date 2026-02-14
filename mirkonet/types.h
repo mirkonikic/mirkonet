@@ -80,27 +80,29 @@ enum class TxType : uint8_t {
 
 struct Transaction {
     TxType   type;
-    NodeID   sender;
+    NodeID   sender;      // Ethereum: from (derived from signature)
+    NodeID   to;          // Ethereum: to (zero = contract deploy)
     uint32_t nonce;
     uint32_t timestamp;
-    uint32_t value;
-    char     target[16];
-    char     name[16];
+    uint32_t value;       // Ethereum: value (token amount)
+    uint32_t gasLimit;    // Ethereum: gasLimit (max gas for this tx)
+    uint32_t gasPrice;    // Ethereum: gasPrice (tokens per gas unit)
+    char     data[16];    // Ethereum: data (contract name for CALL/DEPLOY)
     uint32_t args[MVM_MAX_ARGS];
     uint8_t  argCount;
-    NodeID   voteTarget;
 
     Hash256 hash() const {
         uint8_t buf[80];
         size_t off = 0;
         buf[off++] = (uint8_t)type;
         memcpy(buf + off, sender.id, 6); off += 6;
+        memcpy(buf + off, to.id, 6); off += 6;
         memcpy(buf + off, &nonce, 4); off += 4;
         memcpy(buf + off, &timestamp, 4); off += 4;
         memcpy(buf + off, &value, 4); off += 4;
-        memcpy(buf + off, target, 16); off += 16;
-        memcpy(buf + off, name, 16); off += 16;
-        memcpy(buf + off, voteTarget.id, 6); off += 6;
+        memcpy(buf + off, &gasLimit, 4); off += 4;
+        memcpy(buf + off, &gasPrice, 4); off += 4;
+        memcpy(buf + off, data, 16); off += 16;
         buf[off++] = argCount;
         return sha256(buf, off);
     }

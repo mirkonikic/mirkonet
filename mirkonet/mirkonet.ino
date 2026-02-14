@@ -39,8 +39,11 @@ Transaction buildTx(TxType type) {
     memset(&tx, 0, sizeof(tx));
     tx.type = type;
     tx.sender = g_selfId;
+    tx.to = ZERO_NODE;          // Ethereum: zero = contract deploy / system tx
     tx.nonce = g_txNonce++;
     tx.timestamp = millis();
+    tx.gasLimit = DEFAULT_GAS_LIMIT;
+    tx.gasPrice = DEFAULT_GAS_PRICE;
     return tx;
 }
 
@@ -527,7 +530,7 @@ void fetchCodeForContract(Contract* c) {
 void prefetchCodeForTxns(const Transaction* txns, uint8_t count) {
     for (int i = 0; i < count; i++) {
         if (txns[i].type == TxType::CALL) {
-            Contract* c = g_chain.findContract(txns[i].target);
+            Contract* c = g_chain.findContract(txns[i].data);
             if (c && !c->hasCode) fetchCodeForContract(c);
         }
     }
@@ -721,12 +724,16 @@ void directDeploy(const char* name, const uint8_t* code, uint16_t len) {
     g_deployCache.store(name, code, len);
 
     Transaction tx = buildTx(TxType::DEPLOY);
-    strncpy(tx.name, name, 15);
+    // Ethereum: to=0x0 for contract creation, data=contract name
+    tx.to = ZERO_NODE;
+    strncpy(tx.data, name, 15);
+    tx.gasLimit = len * DEPLOY_GAS_PER_BYTE + 1000;
 
     g_chain.addToMempool(tx);
     g_net.broadcastTx(tx);
     g_led.flashDeploy();
-    Serial0.printf("  [TX] Deploy '%s' submitted (%d bytes)\n", name, len);
+    Serial0.printf("  [TX] Deploy '%s' submitted (%d bytes, gasLimit=%u)\n",
+                  name, len, tx.gasLimit);
 }
 
 void handleSerial() {
@@ -744,13 +751,15 @@ void handleSerial() {
             g_deployCache.store(g_asmName.c_str(), r.code, r.len);
 
             Transaction tx = buildTx(TxType::DEPLOY);
-            strncpy(tx.name, g_asmName.c_str(), 15);
+            tx.to = ZERO_NODE;
+            strncpy(tx.data, g_asmName.c_str(), 15);
+            tx.gasLimit = r.len * DEPLOY_GAS_PER_BYTE + 1000;
 
             g_chain.addToMempool(tx);
             g_net.broadcastTx(tx);
             g_led.flashDeploy();
-            Serial0.printf("[TX] Deploy '%s' submitted (%d bytes bytecode, next block)\n",
-                          g_asmName.c_str(), r.len);
+            Serial0.printf("[TX] Deploy '%s' submitted (%d bytes, gasLimit=%u, next block)\n",
+                          g_asmName.c_str(), r.len, tx.gasLimit);
         } else {
             g_asmBuffer += line + "\n";
         }
@@ -846,19 +855,22 @@ void handleSerial() {
                       g_chain.staking.totalSupply > 0 ?
                       100.0*g_chain.staking.totalStaked/g_chain.staking.totalSupply : 0);
         Serial0.printf("  Block reward:  %u tokens/block (new supply)\n", BLOCK_REWARD);
-        Serial0.printf("  Gas price:     %u token/gas (CALL/DEPLOY)\n", GAS_PRICE);
-        Serial0.printf("  Base tx fee:   %u token (TRANSFER/STAKE)\n", TX_BASE_FEE);
-        Serial0.printf("  Faucet fee:    %u (free)\n", FAUCET_FEE);
-        Serial0.printf("  Min stake:     %u tokens\n", MIN_STAKE);
-        Serial0.printf("  Faucet:        %u tokens (cooldown %ds)\n",
+        Serial0.printf("  Default gas price: %u token/gas\n", DEFAULT_GAS_PRICE);
+        Serial0.printf("  Min gas price:     %u token/gas\n", MIN_GAS_PRICE);
+        Serial0.printf("  Default gas limit: %u gas\n", DEFAULT_GAS_LIMIT);
+        Serial0.printf("  Deploy gas/byte:   %u gas\n", DEPLOY_GAS_PER_BYTE);
+        Serial0.printf("  Faucet fee:        %u (free)\n", FAUCET_FEE);
+        Serial0.printf("  Min stake:         %u tokens\n", MIN_STAKE);
+        Serial0.printf("  Faucet:            %u tokens (cooldown %ds)\n",
                       FAUCET_AMOUNT, FAUCET_COOLDOWN/1000);
-        Serial0.printf("  Unstake delay: %d blocks\n", UNSTAKE_COOLDOWN);
-        Serial0.printf("  Epoch length:  %d blocks\n", EPOCH_LENGTH);
-        Serial0.printf("  Accounts:      %d\n", g_chain.accountCount);
-        Serial0.println("  ---- Validator Income ----");
-        Serial0.println("  Per block: BLOCK_REWARD + sum(tx fees)");
-        Serial0.println("  CALL fee = gasUsed * GAS_PRICE");
-        Serial0.println("  Other fee = TX_BASE_FEE flat");
+        Serial0.printf("  Unstake delay:     %d blocks\n", UNSTAKE_COOLDOWN);
+        Serial0.printf("  Epoch length:      %d blocks\n", EPOCH_LENGTH);
+        Serial0.printf("  Accounts:          %d\n", g_chain.accountCount);
+        Serial0.println("  ---- Validator Income (Ethereum-style) ----");
+        Serial0.println("  Per block: BLOCK_REWARD + sum(gasUsed * gasPrice)");
+        Serial0.println("  CALL fee  = gasUsed * tx.gasPrice");
+        Serial0.println("  DEPLOY fee = codeLen * DEPLOY_GAS_PER_BYTE * tx.gasPrice");
+        Serial0.println("  Other fee  = tx.gasPrice (flat)");
         Serial0.println("=====================\n");
     }
     else if (cmd == "heap") {
@@ -994,11 +1006,12 @@ void handleSerial() {
             return;
         }
         Transaction tx = buildTx(TxType::TRANSFER);
-        tx.voteTarget = target;
+        tx.to = target;
         tx.value = arg2.toInt();
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
-        Serial0.printf("[TX] Transfer %u submitted (next block)\n", tx.value);
+        Serial0.printf("[TX] Transfer %u to %s submitted (next block)\n",
+                      tx.value, target.toShortStr().c_str());
     }
 
     else if (cmd == "deploy") {
@@ -1009,7 +1022,15 @@ void handleSerial() {
     else if (cmd == "call") {
         if (arg1.length() == 0) { Serial0.println("Usage: call <name> [args]"); return; }
         Transaction tx = buildTx(TxType::CALL);
-        strncpy(tx.target, arg1.c_str(), 15);
+        // Ethereum: to=contract, data=calldata (contract name)
+        strncpy(tx.data, arg1.c_str(), 15);
+        Contract* ct = g_chain.findContract(arg1.c_str());
+        if (ct == nullptr) {
+            Serial0.println("Contract not found: " + arg1);
+            return;
+        }
+        // Set 'to' from the contract's deployer (like Ethereum contract address)
+        tx.to = ct->deployer;
         if (arg2.length() > 0) {
             String args = arg2;
             while (args.length() > 0 && tx.argCount < MVM_MAX_ARGS) {
@@ -1020,14 +1041,11 @@ void handleSerial() {
                 args.trim();
             }
         }
-        if (g_chain.findContract(arg1.c_str()) == nullptr) {
-            Serial0.println("Contract not found: " + arg1);
-            return;
-        }
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
         g_led.flashCall();
-        Serial0.println("[TX] Call '" + arg1 + "' submitted (next block)");
+        Serial0.println("[TX] Call '" + arg1 + "' submitted (gasLimit=" +
+                        String(tx.gasLimit) + ", next block)");
     }
     else if (cmd == "contracts") {
         Serial0.println("\n====== Contracts ======");
