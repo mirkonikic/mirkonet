@@ -281,6 +281,28 @@ struct Checkpoint {
     }
 };
 
+struct CompactHeader {
+    uint32_t index;
+    uint32_t timestamp;
+    Hash256  blockHash;
+    Hash256  prevHash;
+    NodeID   validator;
+    uint8_t  txCount;
+    uint32_t reward;
+
+    static CompactHeader fromBlock(const Block& blk) {
+        CompactHeader ch;
+        ch.index     = blk.header.index;
+        ch.timestamp = blk.header.timestamp;
+        ch.blockHash = blk.blockHash;
+        ch.prevHash  = blk.header.prevHash;
+        ch.validator = blk.header.validator;
+        ch.txCount   = blk.header.txCount;
+        ch.reward    = blk.header.reward;
+        return ch;
+    }
+};
+
 enum class MsgType : uint8_t {
     DISCOVERY    = 0x01,
     HEARTBEAT    = 0x02,

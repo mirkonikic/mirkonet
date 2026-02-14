@@ -62,6 +62,7 @@ void setup() {
 
     Serial0.println("\n[Init] Step 1/6: LED...");
     g_led.init();
+    g_led.bootSequence();
     g_led.setState(LED_NO_WIFI);
     Serial0.println("[Init]   LED OK");
 
@@ -122,8 +123,8 @@ void setup() {
     Serial0.printf("  Blocks:     sizeof=%d x max=%d = %dB\n",
                   sizeof(Block), MAX_BLOCKS, sizeof(Block)*MAX_BLOCKS);
     Serial0.printf("  Txns:       sizeof=%d\n", sizeof(Transaction));
-    Serial0.printf("  Pruning:    at %d blocks, keep %d, %d checkpoints\n",
-                  PRUNE_TRIGGER, PRUNE_KEEP, MAX_CHECKPOINTS);
+    Serial0.printf("  Pruning:    at %d blocks, keep %d, %d checkpoints, %d finalized max\n",
+                  PRUNE_TRIGGER, PRUNE_KEEP, MAX_CHECKPOINTS, MAX_FINALIZED);
     Serial0.printf("  Grace:      %ds before block production (peer discovery)\n",
                   BOOT_GRACE_PERIOD / 1000);
     Serial0.printf("  Portal:     http://%s\n", WiFi.softAPIP().toString().c_str());
@@ -209,13 +210,14 @@ void loop() {
         lastAliveLog = now;
         uint32_t sinceGenesis = now - g_consensus.genesisTime;
         bool inGrace = sinceGenesis < BOOT_GRACE_PERIOD;
-        Serial0.printf("[Alive] t=%ds heap=%d wifi=%s peers=%d height=%d mem=%d ckpts=%d role=%s%s\n",
+        Serial0.printf("[Alive] t=%ds heap=%d wifi=%s peers=%d height=%d mem=%d fin=%d ckpts=%d role=%s%s\n",
                       now / 1000,
                       ESP.getFreeHeap(),
                       staUp ? "OK" : "NO",
                       g_net.countAlive(),
                       g_chain.height(),
                       g_chain.blocksInMemory(),
+                      g_chain.finalizedCount,
                       g_chain.checkpointCount,
                       roleName(g_consensus.selfRole),
                       inGrace ? " [GRACE]" : "");
@@ -362,7 +364,10 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
                           g_scratchBlock.header.index, g_chain.height());
             g_consensus.updateRole(g_chain.staking);
             g_consensus.lastProducedSlot = g_scratchBlock.header.slot;
-            g_led.flash(300);
+            if (g_chain.height() % EPOCH_LENGTH == 0)
+                g_led.flashEpoch();
+            else
+                g_led.flashBlock();
         } else {
             const char* reasons[] = {
                 "OK", "wrong index", "prevHash mismatch", "bad hash",
@@ -372,6 +377,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
                           g_scratchBlock.header.index,
                           result < 7 ? reasons[result] : "unknown",
                           result);
+            g_led.flashReject();
         }
         break;
     }
@@ -457,34 +463,65 @@ void handleTCPRequest(WiFiClient& client) {
 void fetchCodeForContract(Contract* c) {
     if (!c || c->hasCode) return;
 
+    // Check deploy cache first (covers self-hosted contracts)
+    auto* cached = g_deployCache.find(c->name);
+    if (cached && cached->hasCode) {
+        if (c->cacheCode(cached->code, cached->codeLen)) {
+            Serial0.printf("[Code] Loaded '%s' from deploy cache (%dB)\n",
+                          c->name, cached->codeLen);
+            return;
+        }
+    }
 
+    // If we are the host, we should have it in cache - nothing more to try locally
+    if (c->host == g_selfId) {
+        Serial0.printf("[Code] We host '%s' but lost bytecode, asking peers...\n", c->name);
+    }
+
+    // Try the designated host peer first
     IPAddress hostIP;
     bool found = false;
+    if (c->host != g_selfId) {
+        for (int i = 0; i < g_net.peerCount; i++) {
+            if (g_net.peers[i].nodeId == c->host && g_net.peers[i].isAlive()) {
+                hostIP = g_net.peers[i].ip;
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if (found) {
+        uint8_t codeBuf[MVM_MAX_CODE];
+        uint16_t codeLen;
+        if (g_net.requestCode(hostIP, c->name, codeBuf, codeLen)) {
+            if (c->cacheCode(codeBuf, codeLen)) {
+                Serial0.printf("[Code] Cached '%s' from host (%dB, hash verified)\n",
+                              c->name, codeLen);
+                return;
+            } else {
+                Serial0.printf("[Code] HASH MISMATCH for '%s' from host!\n", c->name);
+            }
+        }
+    }
+
+    // Fallback: try any alive peer
     for (int i = 0; i < g_net.peerCount; i++) {
-        if (g_net.peers[i].nodeId == c->host && g_net.peers[i].isAlive()) {
-            hostIP = g_net.peers[i].ip;
-            found = true;
-            break;
+        if (!g_net.peers[i].isAlive()) continue;
+        if (found && g_net.peers[i].ip == hostIP) continue;
+
+        uint8_t codeBuf[MVM_MAX_CODE];
+        uint16_t codeLen;
+        if (g_net.requestCode(g_net.peers[i].ip, c->name, codeBuf, codeLen)) {
+            if (c->cacheCode(codeBuf, codeLen)) {
+                Serial0.printf("[Code] Cached '%s' from peer %s (%dB, hash verified)\n",
+                              c->name, g_net.peers[i].nodeId.toShortStr().c_str(), codeLen);
+                return;
+            }
         }
     }
 
-    if (!found) {
-        Serial0.printf("[Code] Host %s for '%s' not reachable\n",
-                      c->host.toShortStr().c_str(), c->name);
-        return;
-    }
-
-    uint8_t codeBuf[MVM_MAX_CODE];
-    uint16_t codeLen;
-    if (g_net.requestCode(hostIP, c->name, codeBuf, codeLen)) {
-        if (c->cacheCode(codeBuf, codeLen)) {
-            Serial0.printf("[Code] Cached '%s' bytecode (%dB, hash verified)\n",
-                          c->name, codeLen);
-        } else {
-            Serial0.printf("[Code] HASH MISMATCH for '%s'! Rejecting bytecode\n",
-                          c->name);
-        }
-    }
+    Serial0.printf("[Code] Could not fetch '%s' from any peer\n", c->name);
 }
 
 void prefetchCodeForTxns(const Transaction* txns, uint8_t count) {
@@ -540,8 +577,7 @@ void checkBlockProduction() {
     if (g_chain.createBlock(g_selfId, slot, txns, txCount)) {
         g_net.broadcastFullBlock(g_chain.lastBlock());
         g_consensus.updateRole(g_chain.staking);
-        g_led.setState(LED_PRODUCING);
-        g_led.flash(500);
+        g_led.flashColor(0, 0, 80, 500);
     }
 }
 
@@ -564,6 +600,7 @@ void trySync() {
     Serial0.printf("[Sync] Peer %s has height %d (we: %d)\n",
                   best->nodeId.toShortStr().c_str(), peerHeight, ourHeight);
 
+    g_led.setState(LED_SYNCING);
 
     if (!g_net.requestBlock(best->ip, ourHeight, g_scratchBlock)) {
         Serial0.println("[Sync] Failed to download block, will retry");
@@ -688,6 +725,7 @@ void directDeploy(const char* name, const uint8_t* code, uint16_t len) {
 
     g_chain.addToMempool(tx);
     g_net.broadcastTx(tx);
+    g_led.flashDeploy();
     Serial0.printf("  [TX] Deploy '%s' submitted (%d bytes)\n", name, len);
 }
 
@@ -710,6 +748,7 @@ void handleSerial() {
 
             g_chain.addToMempool(tx);
             g_net.broadcastTx(tx);
+            g_led.flashDeploy();
             Serial0.printf("[TX] Deploy '%s' submitted (%d bytes bytecode, next block)\n",
                           g_asmName.c_str(), r.len);
         } else {
@@ -866,6 +905,7 @@ void handleSerial() {
                       g_chain.blocksInMemory(), MAX_BLOCKS,
                       g_chain.chainOffset,
                       g_chain.chainOffset + g_chain.blocksInMemory() - 1);
+        Serial0.printf("  Finalized:     %d / %d compact headers\n", g_chain.finalizedCount, MAX_FINALIZED);
         Serial0.printf("  Checkpoints:   %d / %d\n", g_chain.checkpointCount, MAX_CHECKPOINTS);
         Serial0.printf("  Prune trigger: %d blocks\n", PRUNE_TRIGGER);
         Serial0.printf("  Prune keep:    %d blocks\n", PRUNE_KEEP);
@@ -893,6 +933,7 @@ void handleSerial() {
         Serial0.printf("  sizeof(Transaction): %d bytes\n", sizeof(Transaction));
         Serial0.printf("  sizeof(Contract):    %d bytes\n", sizeof(Contract));
         Serial0.printf("  Chain array:         %d bytes\n", sizeof(Block) * MAX_BLOCKS);
+        Serial0.printf("  Finalized array:     %d bytes\n", sizeof(CompactHeader) * MAX_FINALIZED);
         Serial0.printf("  Contract array:      %d bytes\n", sizeof(Contract) * MAX_CONTRACTS);
         Serial0.printf("  Mempool array:       %d bytes\n", sizeof(Transaction) * MAX_PENDING_TX);
         Serial0.println("========================\n");
@@ -925,6 +966,7 @@ void handleSerial() {
         tx.value = arg1.toInt();
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashStake();
         Serial0.printf("[TX] Stake %u submitted (next block)\n", tx.value);
     }
     else if (cmd == "unstake") {
@@ -984,6 +1026,7 @@ void handleSerial() {
         }
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashCall();
         Serial0.println("[TX] Call '" + arg1 + "' submitted (next block)");
     }
     else if (cmd == "contracts") {
@@ -1018,7 +1061,7 @@ void handleSerial() {
 }
 
 void deployExamples() {
-    Serial0.println("\n[Example] Deploying demo contracts (mVM v2, 4-bit ISA)...\n");
+    Serial0.println("\n[Example] Deploying demo contracts (mVM v3, 5-bit ISA)...\n");
 
     {
         String src = R"(

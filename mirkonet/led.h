@@ -22,6 +22,8 @@ enum LedState : uint8_t {
     LED_PRODUCING   = 5,
     LED_SYNCING     = 6,
     LED_TX_FLASH    = 7,
+    LED_BOOT        = 8,
+    LED_ERROR       = 9,
 };
 
 class StatusLED {
@@ -42,6 +44,7 @@ public:
         _lastUpdate = 0;
         _flashEnd = 0;
         _blinkOn = false;
+        _flashR = _flashG = _flashB = 0;
     }
 
     void setState(LedState state) {
@@ -51,11 +54,42 @@ public:
     }
 
     void flash(uint32_t durationMs = 150) {
+        flashColor(80, 80, 80, durationMs);
+    }
+
+    void flashColor(uint8_t r, uint8_t g, uint8_t b, uint32_t durationMs = 200) {
         _flashEnd = millis() + durationMs;
+        _flashR = r; _flashG = g; _flashB = b;
 #if HAS_RGB_LED
-        setRGB(80, 80, 80);
+        setRGB(r, g, b);
 #else
         digitalWrite(BUILTIN_LED_PIN, HIGH);
+#endif
+    }
+
+    void flashDeploy()  { flashColor(0, 80, 40, 400); }
+    void flashCall()    { flashColor(0, 40, 80, 200); }
+    void flashStake()   { flashColor(60, 60, 0, 300); }
+    void flashBlock()   { flashColor(0, 60, 0, 300); }
+    void flashReject()  { flashColor(80, 0, 0, 400); }
+    void flashEpoch()   { flashColor(60, 0, 60, 500); }
+
+    void bootSequence() {
+#if HAS_RGB_LED
+        uint8_t colors[][3] = {
+            {40,0,0}, {0,40,0}, {0,0,40}, {40,40,0}, {0,40,40}, {40,0,40}, {40,40,40}
+        };
+        for (int i = 0; i < 7; i++) {
+            setRGB(colors[i][0], colors[i][1], colors[i][2]);
+            delay(80);
+        }
+        setRGB(0, 0, 0);
+#else
+        for (int i = 0; i < 6; i++) {
+            digitalWrite(BUILTIN_LED_PIN, (i % 2) ? HIGH : LOW);
+            delay(80);
+        }
+        digitalWrite(BUILTIN_LED_PIN, LOW);
 #endif
     }
 
@@ -115,6 +149,14 @@ public:
             case LED_TX_FLASH:
                 setRGB(50, 50, 50);
                 break;
+            case LED_BOOT:
+                { uint8_t v = (uint8_t)(breathe < 50 ? breathe : 100 - breathe);
+                  setRGB(0, v/2, v); }
+                break;
+            case LED_ERROR:
+                { uint8_t v = (uint8_t)(fastBlink ? 60 : 0);
+                  setRGB(v, 0, 0); }
+                break;
         }
 #else
         switch (_state) {
@@ -135,6 +177,9 @@ public:
             case LED_SYNCING:
                 digitalWrite(BUILTIN_LED_PIN, _blinkOn ? HIGH : LOW);
                 break;
+            case LED_ERROR:
+                digitalWrite(BUILTIN_LED_PIN, fastBlink ? HIGH : LOW);
+                break;
             default:
                 break;
         }
@@ -149,6 +194,7 @@ private:
     uint32_t _lastUpdate;
     uint32_t _flashEnd;
     bool     _blinkOn;
+    uint8_t  _flashR, _flashG, _flashB;
 
 #if HAS_RGB_LED
     void setRGB(uint8_t r, uint8_t g, uint8_t b) {

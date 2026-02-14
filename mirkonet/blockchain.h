@@ -21,6 +21,9 @@ public:
     Checkpoint     checkpoints[MAX_CHECKPOINTS];
     uint8_t        checkpointCount = 0;
 
+    CompactHeader  finalized[MAX_FINALIZED];
+    uint16_t       finalizedCount = 0;
+
     Contract       contracts[MAX_CONTRACTS];
     uint8_t        contractCount = 0;
 
@@ -600,6 +603,7 @@ public:
         chainLen = 0;
         chainOffset = 0;
         checkpointCount = 0;
+        finalizedCount = 0;
 
         chain[0] = peerGenesis;
         chainLen = 1;
@@ -681,6 +685,16 @@ public:
         Serial0.printf("\n==== PRUNING: deleting %d blocks [%d..%d], keeping %d ====\n",
                       toPrune, chainOffset, chainOffset + toPrune - 1, PRUNE_KEEP);
 
+        for (uint32_t i = 0; i < toPrune; i++) {
+            if (finalizedCount < MAX_FINALIZED) {
+                finalized[finalizedCount++] = CompactHeader::fromBlock(chain[i]);
+            } else {
+                memmove(finalized, finalized + 1,
+                        (MAX_FINALIZED - 1) * sizeof(CompactHeader));
+                finalized[MAX_FINALIZED - 1] = CompactHeader::fromBlock(chain[i]);
+            }
+        }
+
         Hash256 merkle = computeBlockMerkle(0, toPrune);
 
         Hash256 prevCkpt = ZERO_HASH;
@@ -723,6 +737,7 @@ public:
         Serial0.printf("  Chain now: blocks [%d..%d] (%d in memory)\n",
                       chainOffset, chainOffset + chainLen - 1, chainLen);
         Serial0.printf("  Total logical height: %d\n", height());
+        Serial0.printf("  Finalized headers: %d\n", finalizedCount);
         Serial0.printf("  Checkpoints: %d (covering blocks 0..%d)\n",
                       checkpointCount, chainOffset - 1);
         Serial0.println("==== PRUNE COMPLETE ====\n");
@@ -764,7 +779,8 @@ public:
         Serial0.printf("In memory: %d blocks [%d..%d] | Logical height: %d | Epoch: %d\n",
                       chainLen, chainOffset, chainOffset + chainLen - 1,
                       height(), currentEpoch());
-        Serial0.printf("Checkpoints: %d\n", checkpointCount);
+        Serial0.printf("Finalized headers: %d | Checkpoints: %d\n",
+                      finalizedCount, checkpointCount);
         Serial0.println("============================\n");
     }
 
