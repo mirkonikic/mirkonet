@@ -2,49 +2,70 @@
 #include "config.h"
 #include "types.h"
 
+// 5-bit opcode encoding: [5-bit opcode | 3-bit modifier]
+#define OP5_HALT      0x00
+#define OP5_PUSH      0x01
+#define OP5_POP       0x02
+#define OP5_DUP       0x03
+#define OP5_SWAP      0x04
+#define OP5_ADD       0x05
+#define OP5_SUB       0x06
+#define OP5_MUL       0x07
+#define OP5_DIV       0x08
+#define OP5_MOD       0x09
+#define OP5_AND       0x0A
+#define OP5_OR        0x0B
+#define OP5_XOR       0x0C
+#define OP5_SHL       0x0D
+#define OP5_SHR       0x0E
+#define OP5_CMP       0x0F
+#define OP5_NOT       0x10
+#define OP5_JMP       0x11
+#define OP5_SLOAD     0x12
+#define OP5_SSTORE    0x13
+#define OP5_EMIT      0x14
+#define OP5_ARG       0x15
+#define OP5_BALANCE   0x16
+#define OP5_CALLVALUE 0x17
+#define OP5_SHA3      0x18
+// 0x19-0x1F reserved
 
-#define OP4_HALT   0x0
-#define OP4_PUSH   0x1
-#define OP4_POP    0x2
-#define OP4_DUP    0x3
-#define OP4_SWAP   0x4
-#define OP4_ADD    0x5
-#define OP4_SUB    0x6
-#define OP4_MUL    0x7
-#define OP4_CMP    0x8
-#define OP4_NOT    0x9
-#define OP4_JMP    0xA
-#define OP4_MOD    0xB
-#define OP4_SLOAD  0xC
-#define OP4_SSTORE 0xD
-#define OP4_EMIT   0xE
-#define OP4_ARG    0xF
+#define ENCODE(op, mod)  (uint8_t)(((op) << 3) | ((mod) & 0x07))
+#define DECODE_OP(b)     ((b) >> 3)
+#define DECODE_MOD(b)    ((b) & 0x07)
 
-#define ENCODE(op, mod)  (uint8_t)(((op) << 4) | ((mod) & 0x0F))
-#define DECODE_OP(b)     ((b) >> 4)
-#define DECODE_MOD(b)    ((b) & 0x0F)
-
-#define BYTE_HALT      ENCODE(OP4_HALT, 0)
-#define BYTE_REVERT    ENCODE(OP4_HALT, 1)
-#define BYTE_PUSH8     ENCODE(OP4_PUSH, 1)
-#define BYTE_PUSH16    ENCODE(OP4_PUSH, 2)
-#define BYTE_POP       ENCODE(OP4_POP, 0)
-#define BYTE_DUP       ENCODE(OP4_DUP, 0)
-#define BYTE_SWAP      ENCODE(OP4_SWAP, 0)
-#define BYTE_ADD       ENCODE(OP4_ADD, 0)
-#define BYTE_SUB       ENCODE(OP4_SUB, 0)
-#define BYTE_MUL       ENCODE(OP4_MUL, 0)
-#define BYTE_EQ        ENCODE(OP4_CMP, 0)
-#define BYTE_GT        ENCODE(OP4_CMP, 1)
-#define BYTE_NOT       ENCODE(OP4_NOT, 0)
-#define BYTE_JUMP(t)   ENCODE(OP4_JMP, 0), (uint8_t)(t)
-#define BYTE_JUMPI(t)  ENCODE(OP4_JMP, 1), (uint8_t)(t)
-#define BYTE_MOD       ENCODE(OP4_MOD, 0)
-#define BYTE_SLOAD     ENCODE(OP4_SLOAD, 0)
-#define BYTE_SSTORE    ENCODE(OP4_SSTORE, 0)
-#define BYTE_EMIT      ENCODE(OP4_EMIT, 0)
-#define BYTE_ARG(n)    ENCODE(OP4_ARG, (n))
-#define BYTE_CALLER    ENCODE(OP4_ARG, 15)
+#define BYTE_HALT      ENCODE(OP5_HALT, 0)
+#define BYTE_REVERT    ENCODE(OP5_HALT, 1)
+#define BYTE_PUSH8     ENCODE(OP5_PUSH, 1)
+#define BYTE_PUSH16    ENCODE(OP5_PUSH, 2)
+#define BYTE_PUSH32    ENCODE(OP5_PUSH, 3)
+#define BYTE_POP       ENCODE(OP5_POP, 0)
+#define BYTE_DUP       ENCODE(OP5_DUP, 0)
+#define BYTE_SWAP      ENCODE(OP5_SWAP, 0)
+#define BYTE_ADD       ENCODE(OP5_ADD, 0)
+#define BYTE_SUB       ENCODE(OP5_SUB, 0)
+#define BYTE_MUL       ENCODE(OP5_MUL, 0)
+#define BYTE_DIV       ENCODE(OP5_DIV, 0)
+#define BYTE_MOD       ENCODE(OP5_MOD, 0)
+#define BYTE_AND       ENCODE(OP5_AND, 0)
+#define BYTE_OR        ENCODE(OP5_OR, 0)
+#define BYTE_XOR       ENCODE(OP5_XOR, 0)
+#define BYTE_SHL       ENCODE(OP5_SHL, 0)
+#define BYTE_SHR       ENCODE(OP5_SHR, 0)
+#define BYTE_EQ        ENCODE(OP5_CMP, 0)
+#define BYTE_GT        ENCODE(OP5_CMP, 1)
+#define BYTE_LT        ENCODE(OP5_CMP, 2)
+#define BYTE_NOT       ENCODE(OP5_NOT, 0)
+#define BYTE_JUMP(t)   ENCODE(OP5_JMP, 0), (uint8_t)(t)
+#define BYTE_JUMPI(t)  ENCODE(OP5_JMP, 1), (uint8_t)(t)
+#define BYTE_SLOAD     ENCODE(OP5_SLOAD, 0)
+#define BYTE_SSTORE    ENCODE(OP5_SSTORE, 0)
+#define BYTE_EMIT      ENCODE(OP5_EMIT, 0)
+#define BYTE_ARG(n)    ENCODE(OP5_ARG, (n))
+#define BYTE_CALLER    ENCODE(OP5_ARG, 7)
+#define BYTE_BALANCE   ENCODE(OP5_BALANCE, 0)
+#define BYTE_CALLVALUE ENCODE(OP5_CALLVALUE, 0)
+#define BYTE_SHA3      ENCODE(OP5_SHA3, 0)
 
 enum MVMStatus : uint8_t {
     VM_RUNNING=0, VM_HALTED=1, VM_REVERTED=2,
@@ -177,77 +198,112 @@ public:
 
             switch (op) {
 
-            case OP4_HALT:
+            case OP5_HALT:
                 _status = (mod == 0) ? VM_HALTED : VM_REVERTED;
                 break;
 
-            case OP4_PUSH:
+            case OP5_PUSH:
                 if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
                 if (mod == 1) {
-
                     if (_pc+1 >= contract.codeLen) { _status = VM_ERR_CODE_BOUNDS; break; }
                     _stack[_sp++] = contract.code[_pc+1];
                     _pc += 2;
                 } else if (mod == 2) {
-
                     if (_pc+2 >= contract.codeLen) { _status = VM_ERR_CODE_BOUNDS; break; }
                     _stack[_sp++] = ((uint32_t)contract.code[_pc+1] << 8) |
                                      contract.code[_pc+2];
                     _pc += 3;
+                } else if (mod == 3) {
+                    if (_pc+4 >= contract.codeLen) { _status = VM_ERR_CODE_BOUNDS; break; }
+                    _stack[_sp++] = ((uint32_t)contract.code[_pc+1] << 24) |
+                                    ((uint32_t)contract.code[_pc+2] << 16) |
+                                    ((uint32_t)contract.code[_pc+3] << 8)  |
+                                     contract.code[_pc+4];
+                    _pc += 5;
                 } else {
                     _status = VM_ERR_CODE_BOUNDS; break;
                 }
                 break;
 
-            case OP4_POP:
+            case OP5_POP:
                 if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
                 _sp--; _pc++; break;
 
-            case OP4_DUP:
+            case OP5_DUP:
                 if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
                 if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
                 _stack[_sp] = _stack[_sp-1]; _sp++; _pc++; break;
 
-            case OP4_SWAP:
+            case OP5_SWAP:
                 if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
                 { uint32_t t = _stack[_sp-1]; _stack[_sp-1] = _stack[_sp-2];
                   _stack[_sp-2] = t; }
                 _pc++; break;
 
-            case OP4_ADD:
+            case OP5_ADD:
                 if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
                 _stack[_sp-2] += _stack[_sp-1]; _sp--; _pc++; break;
 
-            case OP4_SUB:
+            case OP5_SUB:
                 if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
                 _stack[_sp-2] -= _stack[_sp-1]; _sp--; _pc++; break;
 
-            case OP4_MUL:
+            case OP5_MUL:
                 if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
                 _stack[_sp-2] *= _stack[_sp-1]; _sp--; _pc++; break;
 
-            case OP4_CMP:
+            case OP5_DIV:
+                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                if (_stack[_sp-1] == 0) { _status = VM_ERR_DIV_ZERO; break; }
+                _stack[_sp-2] /= _stack[_sp-1]; _sp--; _pc++; break;
+
+            case OP5_MOD:
+                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                if (_stack[_sp-1] == 0) { _status = VM_ERR_DIV_ZERO; break; }
+                _stack[_sp-2] %= _stack[_sp-1]; _sp--; _pc++; break;
+
+            case OP5_AND:
+                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                _stack[_sp-2] &= _stack[_sp-1]; _sp--; _pc++; break;
+
+            case OP5_OR:
+                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                _stack[_sp-2] |= _stack[_sp-1]; _sp--; _pc++; break;
+
+            case OP5_XOR:
+                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                _stack[_sp-2] ^= _stack[_sp-1]; _sp--; _pc++; break;
+
+            case OP5_SHL:
+                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                _stack[_sp-2] <<= (_stack[_sp-1] & 31); _sp--; _pc++; break;
+
+            case OP5_SHR:
+                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                _stack[_sp-2] >>= (_stack[_sp-1] & 31); _sp--; _pc++; break;
+
+            case OP5_CMP:
                 if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
                 if (mod == 0)
                     _stack[_sp-2] = (_stack[_sp-2] == _stack[_sp-1]) ? 1 : 0;
-                else
+                else if (mod == 1)
                     _stack[_sp-2] = (_stack[_sp-2] > _stack[_sp-1]) ? 1 : 0;
+                else
+                    _stack[_sp-2] = (_stack[_sp-2] < _stack[_sp-1]) ? 1 : 0;
                 _sp--; _pc++; break;
 
-            case OP4_NOT:
+            case OP5_NOT:
                 if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
                 _stack[_sp-1] = (_stack[_sp-1] == 0) ? 1 : 0;
                 _pc++; break;
 
-            case OP4_JMP: {
+            case OP5_JMP: {
                 if (_pc+1 >= contract.codeLen) { _status = VM_ERR_CODE_BOUNDS; break; }
                 uint8_t target = contract.code[_pc+1];
                 if (target >= contract.codeLen) { _status = VM_ERR_BAD_JUMP; break; }
                 if (mod == 0) {
-
                     _pc = target;
                 } else {
-
                     if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
                     uint32_t cond = _stack[--_sp];
                     _pc = cond ? target : (_pc + 2);
@@ -255,38 +311,58 @@ public:
                 break;
             }
 
-            case OP4_MOD:
-                if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
-                if (_stack[_sp-1] == 0) { _status = VM_ERR_DIV_ZERO; break; }
-                _stack[_sp-2] %= _stack[_sp-1]; _sp--; _pc++; break;
-
-            case OP4_SLOAD:
+            case OP5_SLOAD:
                 if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
                 _stack[_sp-1] = contract.storageGet(_stack[_sp-1]);
                 _pc++; break;
 
-            case OP4_SSTORE:
+            case OP5_SSTORE:
                 if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
                 { uint32_t v = _stack[--_sp]; uint32_t k = _stack[--_sp];
                   if (!contract.storageSet(k, v)) { _status = VM_ERR_STORAGE_FULL; break; } }
                 _pc++; break;
 
-            case OP4_EMIT:
+            case OP5_EMIT:
                 if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
                 if (_eventCount < MVM_MAX_EVENTS)
                     _events[_eventCount++] = { _stack[--_sp], _gasUsed };
                 else _sp--;
                 _pc++; break;
 
-            case OP4_ARG:
+            case OP5_ARG:
                 if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
-                if (mod == 15) {
-
+                if (mod == 7) {
                     _stack[_sp++] = ctx.caller.hash32();
                 } else {
-
                     if (mod >= ctx.argCount) { _status = VM_ERR_BAD_ARG; break; }
                     _stack[_sp++] = ctx.args[mod];
+                }
+                _pc++; break;
+
+            case OP5_BALANCE:
+                if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                _stack[_sp++] = contract.balance;
+                _pc++; break;
+
+            case OP5_CALLVALUE:
+                if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                _stack[_sp++] = ctx.callValue;
+                _pc++; break;
+
+            case OP5_SHA3:
+                if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
+                {
+                    uint32_t val = _stack[_sp-1];
+                    uint8_t buf[4];
+                    buf[0] = (val >> 24) & 0xFF;
+                    buf[1] = (val >> 16) & 0xFF;
+                    buf[2] = (val >> 8) & 0xFF;
+                    buf[3] = val & 0xFF;
+                    Hash256 h = sha256(buf, 4);
+                    _stack[_sp-1] = ((uint32_t)h.bytes[0] << 24) |
+                                    ((uint32_t)h.bytes[1] << 16) |
+                                    ((uint32_t)h.bytes[2] << 8) |
+                                     h.bytes[3];
                 }
                 _pc++; break;
 
@@ -294,7 +370,6 @@ public:
                 _status = VM_ERR_CODE_BOUNDS; break;
             }
         }
-
 
         if (_status != VM_HALTED) {
             memcpy(contract.storage, _snap, sizeof(contract.storage));

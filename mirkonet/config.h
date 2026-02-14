@@ -31,11 +31,12 @@
 #define TX_BASE_FEE         1
 #define FAUCET_FEE          0
 
-#define MAX_BLOCKS          50
+#define MAX_BLOCKS          20
 #define HASH_SIZE           32
+#define MAX_FINALIZED       100
 
-#define PRUNE_TRIGGER       40
-#define PRUNE_KEEP          20
+#define PRUNE_TRIGGER       16
+#define PRUNE_KEEP          8
 #define MAX_CHECKPOINTS     8
 
 #define MVM_MAX_STACK       48

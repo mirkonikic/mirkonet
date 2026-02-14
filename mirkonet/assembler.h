@@ -53,7 +53,7 @@ public:
             if (line.length() == 0 || line.startsWith(";") || line.startsWith("#"))
                 continue;
             if (line.endsWith(":")) continue;
-            if (off >= MVM_MAX_CODE - 3) {
+            if (off >= MVM_MAX_CODE - 5) {
                 r.ok = false;
                 r.error = "Code too long L" + String(lineNum);
                 return r;
@@ -68,22 +68,32 @@ public:
             mn.toUpperCase();
 
 
-            if      (mn == "HALT")   r.code[off++] = BYTE_HALT;
-            else if (mn == "REVERT") r.code[off++] = BYTE_REVERT;
-            else if (mn == "POP")    r.code[off++] = BYTE_POP;
-            else if (mn == "DUP")    r.code[off++] = BYTE_DUP;
-            else if (mn == "SWAP")   r.code[off++] = BYTE_SWAP;
-            else if (mn == "ADD")    r.code[off++] = BYTE_ADD;
-            else if (mn == "SUB")    r.code[off++] = BYTE_SUB;
-            else if (mn == "MUL")    r.code[off++] = BYTE_MUL;
-            else if (mn == "MOD")    r.code[off++] = BYTE_MOD;
-            else if (mn == "EQ")     r.code[off++] = BYTE_EQ;
-            else if (mn == "GT")     r.code[off++] = ENCODE(OP4_CMP, 1);
-            else if (mn == "NOT")    r.code[off++] = BYTE_NOT;
-            else if (mn == "SLOAD")  r.code[off++] = BYTE_SLOAD;
-            else if (mn == "SSTORE") r.code[off++] = BYTE_SSTORE;
-            else if (mn == "EMIT")   r.code[off++] = BYTE_EMIT;
-            else if (mn == "CALLER") r.code[off++] = BYTE_CALLER;
+            if      (mn == "HALT")      r.code[off++] = BYTE_HALT;
+            else if (mn == "REVERT")    r.code[off++] = BYTE_REVERT;
+            else if (mn == "POP")       r.code[off++] = BYTE_POP;
+            else if (mn == "DUP")       r.code[off++] = BYTE_DUP;
+            else if (mn == "SWAP")      r.code[off++] = BYTE_SWAP;
+            else if (mn == "ADD")       r.code[off++] = BYTE_ADD;
+            else if (mn == "SUB")       r.code[off++] = BYTE_SUB;
+            else if (mn == "MUL")       r.code[off++] = BYTE_MUL;
+            else if (mn == "DIV")       r.code[off++] = BYTE_DIV;
+            else if (mn == "MOD")       r.code[off++] = BYTE_MOD;
+            else if (mn == "AND")       r.code[off++] = BYTE_AND;
+            else if (mn == "OR")        r.code[off++] = BYTE_OR;
+            else if (mn == "XOR")       r.code[off++] = BYTE_XOR;
+            else if (mn == "SHL")       r.code[off++] = BYTE_SHL;
+            else if (mn == "SHR")       r.code[off++] = BYTE_SHR;
+            else if (mn == "EQ")        r.code[off++] = BYTE_EQ;
+            else if (mn == "GT")        r.code[off++] = ENCODE(OP5_CMP, 1);
+            else if (mn == "LT")        r.code[off++] = BYTE_LT;
+            else if (mn == "NOT")       r.code[off++] = BYTE_NOT;
+            else if (mn == "SLOAD")     r.code[off++] = BYTE_SLOAD;
+            else if (mn == "SSTORE")    r.code[off++] = BYTE_SSTORE;
+            else if (mn == "EMIT")      r.code[off++] = BYTE_EMIT;
+            else if (mn == "CALLER")    r.code[off++] = BYTE_CALLER;
+            else if (mn == "BALANCE")   r.code[off++] = BYTE_BALANCE;
+            else if (mn == "CALLVALUE") r.code[off++] = BYTE_CALLVALUE;
+            else if (mn == "SHA3")      r.code[off++] = BYTE_SHA3;
 
 
             else if (mn == "PUSH") {
@@ -105,8 +115,14 @@ public:
                 if (val <= 255) {
                     r.code[off++] = BYTE_PUSH8;
                     r.code[off++] = (uint8_t)val;
-                } else {
+                } else if (val <= 65535) {
                     r.code[off++] = BYTE_PUSH16;
+                    r.code[off++] = (uint8_t)(val >> 8);
+                    r.code[off++] = (uint8_t)(val & 0xFF);
+                } else {
+                    r.code[off++] = BYTE_PUSH32;
+                    r.code[off++] = (uint8_t)(val >> 24);
+                    r.code[off++] = (uint8_t)(val >> 16);
                     r.code[off++] = (uint8_t)(val >> 8);
                     r.code[off++] = (uint8_t)(val & 0xFF);
                 }
@@ -116,7 +132,7 @@ public:
             else if (mn == "JUMP") {
                 uint8_t target = resolveTarget(operand, labels, r, lineNum);
                 if (!r.ok) return r;
-                r.code[off++] = ENCODE(OP4_JMP, 0);
+                r.code[off++] = ENCODE(OP5_JMP, 0);
                 r.code[off++] = target;
             }
 
@@ -124,19 +140,19 @@ public:
             else if (mn == "JUMPI") {
                 uint8_t target = resolveTarget(operand, labels, r, lineNum);
                 if (!r.ok) return r;
-                r.code[off++] = ENCODE(OP4_JMP, 1);
+                r.code[off++] = ENCODE(OP5_JMP, 1);
                 r.code[off++] = target;
             }
 
 
             else if (mn == "ARG") {
                 uint8_t idx = (uint8_t)operand.toInt();
-                if (idx > 14) {
+                if (idx > 6) {
                     r.ok = false;
-                    r.error = "ARG index 0-14 only, L" + String(lineNum);
+                    r.error = "ARG index 0-6 only, L" + String(lineNum);
                     return r;
                 }
-                r.code[off++] = ENCODE(OP4_ARG, idx);
+                r.code[off++] = ENCODE(OP5_ARG, idx);
             }
 
             else {
@@ -161,38 +177,57 @@ public:
             uint8_t mod = DECODE_MOD(byte);
 
             switch (op) {
-            case OP4_HALT:
+            case OP5_HALT:
                 out += (mod == 0) ? "HALT\n" : "REVERT\n"; pc++; break;
-            case OP4_PUSH:
+            case OP5_PUSH:
                 if (mod == 1 && pc+1 < len) {
                     out += "PUSH " + String(code[pc+1]) + "\n"; pc += 2;
                 } else if (mod == 2 && pc+2 < len) {
                     uint16_t v = ((uint16_t)code[pc+1] << 8) | code[pc+2];
                     out += "PUSH " + String(v) + "\n"; pc += 3;
+                } else if (mod == 3 && pc+4 < len) {
+                    uint32_t v = ((uint32_t)code[pc+1] << 24) |
+                                 ((uint32_t)code[pc+2] << 16) |
+                                 ((uint32_t)code[pc+3] << 8) |
+                                  code[pc+4];
+                    out += "PUSH " + String(v) + "\n"; pc += 5;
                 } else { out += "PUSH ??\n"; pc++; }
                 break;
-            case OP4_POP:    out += "POP\n"; pc++; break;
-            case OP4_DUP:    out += "DUP\n"; pc++; break;
-            case OP4_SWAP:   out += "SWAP\n"; pc++; break;
-            case OP4_ADD:    out += "ADD\n"; pc++; break;
-            case OP4_SUB:    out += "SUB\n"; pc++; break;
-            case OP4_MUL:    out += "MUL\n"; pc++; break;
-            case OP4_CMP:    out += (mod==0) ? "EQ\n" : "GT\n"; pc++; break;
-            case OP4_NOT:    out += "NOT\n"; pc++; break;
-            case OP4_JMP:
+            case OP5_POP:       out += "POP\n"; pc++; break;
+            case OP5_DUP:       out += "DUP\n"; pc++; break;
+            case OP5_SWAP:      out += "SWAP\n"; pc++; break;
+            case OP5_ADD:       out += "ADD\n"; pc++; break;
+            case OP5_SUB:       out += "SUB\n"; pc++; break;
+            case OP5_MUL:       out += "MUL\n"; pc++; break;
+            case OP5_DIV:       out += "DIV\n"; pc++; break;
+            case OP5_MOD:       out += "MOD\n"; pc++; break;
+            case OP5_AND:       out += "AND\n"; pc++; break;
+            case OP5_OR:        out += "OR\n"; pc++; break;
+            case OP5_XOR:       out += "XOR\n"; pc++; break;
+            case OP5_SHL:       out += "SHL\n"; pc++; break;
+            case OP5_SHR:       out += "SHR\n"; pc++; break;
+            case OP5_CMP:
+                if (mod == 0) out += "EQ\n";
+                else if (mod == 1) out += "GT\n";
+                else out += "LT\n";
+                pc++; break;
+            case OP5_NOT:       out += "NOT\n"; pc++; break;
+            case OP5_JMP:
                 if (pc+1 < len) {
                     out += (mod==0 ? "JUMP " : "JUMPI ") + String(code[pc+1]) + "\n";
                     pc += 2;
                 } else { out += "JMP ??\n"; pc++; }
                 break;
-            case OP4_MOD:    out += "MOD\n"; pc++; break;
-            case OP4_SLOAD:  out += "SLOAD\n"; pc++; break;
-            case OP4_SSTORE: out += "SSTORE\n"; pc++; break;
-            case OP4_EMIT:   out += "EMIT\n"; pc++; break;
-            case OP4_ARG:
-                if (mod == 15) out += "CALLER\n";
+            case OP5_SLOAD:     out += "SLOAD\n"; pc++; break;
+            case OP5_SSTORE:    out += "SSTORE\n"; pc++; break;
+            case OP5_EMIT:      out += "EMIT\n"; pc++; break;
+            case OP5_ARG:
+                if (mod == 7) out += "CALLER\n";
                 else out += "ARG " + String(mod) + "\n";
                 pc++; break;
+            case OP5_BALANCE:   out += "BALANCE\n"; pc++; break;
+            case OP5_CALLVALUE: out += "CALLVALUE\n"; pc++; break;
+            case OP5_SHA3:      out += "SHA3\n"; pc++; break;
             default: out += "??(0x" + String(byte, HEX) + ")\n"; pc++; break;
             }
         }
@@ -206,7 +241,9 @@ private:
             uint32_t val = 0;
             if (operand.startsWith("0x")) val = strtoul(operand.c_str(), nullptr, 16);
             else val = operand.toInt();
-            return (val <= 255) ? 2 : 3;
+            if (val <= 255) return 2;
+            if (val <= 65535) return 3;
+            return 5;
         }
         if (mn == "JUMP" || mn == "JUMPI") return 2;
         return 1;
