@@ -27,8 +27,11 @@
 #define FAUCET_COOLDOWN     60000
 #define MAX_TXN_PER_BLOCK   4
 
-#define GAS_PRICE           1
-#define TX_BASE_FEE         1
+#define DEFAULT_GAS_PRICE   1
+#define MIN_GAS_PRICE       1
+#define DEFAULT_GAS_LIMIT   8000
+#define TX_BASE_GAS         21000
+#define DEPLOY_GAS_PER_BYTE 200
 #define FAUCET_FEE          0
 
 #define MAX_BLOCKS          20

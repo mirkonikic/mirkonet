@@ -129,21 +129,23 @@ public:
 
 
     uint32_t calcFee(const Transaction& tx, uint32_t gasUsed = 0) const {
+        uint32_t gp = tx.gasPrice > 0 ? tx.gasPrice : DEFAULT_GAS_PRICE;
         switch (tx.type) {
-            case TxType::CALL:    return gasUsed * GAS_PRICE;
+            case TxType::CALL:    return gasUsed * gp;
             case TxType::DEPLOY: {
-                auto* e = g_deployCache.find(tx.name);
-                return e ? e->codeLen * GAS_PRICE : TX_BASE_FEE;
+                auto* e = g_deployCache.find(tx.data);
+                return e ? (e->codeLen * DEPLOY_GAS_PER_BYTE) * gp / DEPLOY_GAS_PER_BYTE : gp;
             }
             case TxType::FAUCET:  return FAUCET_FEE;
-            default:              return TX_BASE_FEE;
+            default:              return gp;
         }
     }
 
-    bool canAffordFee(const NodeID& sender, TxType type) const {
+    bool canAffordFee(const NodeID& sender, TxType type, uint32_t gasPrice = DEFAULT_GAS_PRICE) const {
         uint32_t bal = getBalance(sender);
         if (type == TxType::FAUCET) return true;
-        return bal >= TX_BASE_FEE;    }
+        return bal >= gasPrice;
+    }
 
     bool chargeFee(const NodeID& sender, uint32_t fee) {
         if (fee == 0) return true;
@@ -214,27 +216,36 @@ public:
 
     TxResult executeTx(const Transaction& tx) {
         TxResult r = { false, false, VM_RUNNING, 0, 0, "" };
+        uint32_t gp = tx.gasPrice > 0 ? tx.gasPrice : DEFAULT_GAS_PRICE;
 
-        if (tx.type != TxType::FAUCET && !canAffordFee(tx.sender, tx.type)) {
-            r.message = "Insufficient balance for fee (need >= " +
-                        String(TX_BASE_FEE) + " tokens)";
+        if (tx.type != TxType::FAUCET && !canAffordFee(tx.sender, tx.type, gp)) {
+            r.message = "Insufficient balance for gas (need >= " +
+                        String(gp) + " tokens)";
             return r;
         }
 
         switch (tx.type) {
 
         case TxType::DEPLOY: {
-            auto* entry = g_deployCache.find(tx.name);
+            // Ethereum: to=0x0, data=contract init code
+            auto* entry = g_deployCache.find(tx.data);
             if (!entry) {
-                r.message = String("No deploy data for '") + tx.name + "'";
+                r.message = String("No deploy data for '") + tx.data + "'";
                 break;
             }
-            r.fee = entry->codeLen * GAS_PRICE;
+            r.gasUsed = entry->codeLen * DEPLOY_GAS_PER_BYTE;
+            if (tx.gasLimit > 0 && r.gasUsed > tx.gasLimit) {
+                r.message = "Out of gas: need " + String(r.gasUsed) + ", limit " + String(tx.gasLimit);
+                r.fee = tx.gasLimit * gp;
+                chargeFee(tx.sender, r.fee);
+                break;
+            }
+            r.fee = r.gasUsed * gp;
             uint32_t bal = getBalance(tx.sender);
-            if (bal < r.fee) { r.message = "Can't afford deploy fee (" + String(r.fee) + ")"; break; }
+            if (bal < r.fee) { r.message = "Can't afford deploy gas (" + String(r.fee) + ")"; break; }
 
             if (entry->hasCode) {
-                Contract* c = deployContract(tx.name, entry->code,
+                Contract* c = deployContract(tx.data, entry->code,
                                               entry->codeLen, tx.sender);
                 if (c) {
                     c->host = tx.sender;
@@ -242,15 +253,16 @@ public:
                     c->codeHash = entry->codeHash;
                     chargeFee(tx.sender, r.fee);
                     r.success = true;
-                    r.message = String("Deployed '") + tx.name + "' hosted locally (" +
-                                String(entry->codeLen) + "B, fee:" + String(r.fee) + ")";
+                    r.message = String("Deployed '") + tx.data + "' hosted locally (" +
+                                String(entry->codeLen) + "B, gas:" + String(r.gasUsed) +
+                                " fee:" + String(r.fee) + ")";
                 } else {
                     r.message = "Deploy failed (full or duplicate)";
                     r.fee = 0;
                 }
             } else {
-                if (findContract(tx.name) != nullptr) {
-                    r.message = String("Contract '") + tx.name + "' already exists";
+                if (findContract(tx.data) != nullptr) {
+                    r.message = String("Contract '") + tx.data + "' already exists";
                     r.fee = 0;
                     break;
                 }
@@ -260,22 +272,24 @@ public:
                     break;
                 }
                 Contract& c = contracts[contractCount++];
-                c.initRemote(tx.name, tx.sender, tx.sender, entry->codeHash);
+                c.initRemote(tx.data, tx.sender, tx.sender, entry->codeHash);
                 c.codeLen = entry->codeLen;
                 chargeFee(tx.sender, r.fee);
                 r.success = true;
-                r.message = String("Registered '") + tx.name + "' hosted by " +
+                r.message = String("Registered '") + tx.data + "' hosted by " +
                             tx.sender.toShortStr() + " (" +
-                            String(entry->codeLen) + "B, fee:" + String(r.fee) + ")";
+                            String(entry->codeLen) + "B, gas:" + String(r.gasUsed) +
+                            " fee:" + String(r.fee) + ")";
             }
             break;
         }
 
         case TxType::CALL: {
-            Contract* c = findContract(tx.target);
-            if (!c) { r.message = String("Not found: ") + tx.target; break; }
+            // Ethereum: to=contract address, data=calldata
+            Contract* c = findContract(tx.data);
+            if (!c) { r.message = String("Not found: ") + tx.data; break; }
             if (!c->hasCode) {
-                r.message = String("No bytecode for '") + tx.target +
+                r.message = String("No bytecode for '") + tx.data +
                             "' (hosted by " + c->host.toShortStr() + ")";
                 r.needsCode = true;
                 break;
@@ -286,49 +300,65 @@ public:
             memcpy(ctx.args, tx.args, tx.argCount * 4);
             ctx.callValue = tx.value;
 
+            // Apply gasLimit from tx (Ethereum style)
+            uint32_t savedGasMax = MVM_MAX_GAS;
             MVMStatus st = vm.execute(*c, ctx);
             r.vmStatus = st;
             r.gasUsed = vm.gasUsed();
-            r.fee = r.gasUsed * GAS_PRICE;
+
+            if (tx.gasLimit > 0 && r.gasUsed > tx.gasLimit) {
+                r.fee = tx.gasLimit * gp;
+                chargeFee(tx.sender, r.fee);
+                r.success = false;
+                r.message = String(c->name) + ": OUT_OF_GAS (used:" + String(r.gasUsed) +
+                            " limit:" + String(tx.gasLimit) + " fee:" + String(r.fee) + ")";
+                break;
+            }
+
+            r.fee = r.gasUsed * gp;
             chargeFee(tx.sender, r.fee);
 
             r.success = (st == VM_HALTED);
             r.message = String(c->name) + ": " + statusName(st) +
-                        " (gas:" + String(r.gasUsed) + " fee:" + String(r.fee) + ")";
+                        " (gas:" + String(r.gasUsed) + " price:" + String(gp) +
+                        " fee:" + String(r.fee) + ")";
             break;
         }
 
         case TxType::TRANSFER: {
-            r.fee = TX_BASE_FEE;
+            // Ethereum: to=recipient, value=amount, gasLimit=21000
+            r.fee = gp;
             uint32_t totalCost = tx.value + r.fee;
             uint32_t bal = getBalance(tx.sender);
             if (bal < totalCost) {
-                r.message = "Need " + String(totalCost) + " (amount+fee), have " + String(bal);
+                r.message = "Need " + String(totalCost) + " (value+gas), have " + String(bal);
                 r.fee = 0;
                 break;
             }
             chargeFee(tx.sender, r.fee);
-            bool ok = transfer(tx.sender, tx.voteTarget, tx.value);
+            bool ok = transfer(tx.sender, tx.to, tx.value);
             r.success = ok;
-            r.message = ok ? "Sent " + String(tx.value) + " tokens (fee:" + String(r.fee) + ")"
+            r.message = ok ? "Sent " + String(tx.value) + " to " + tx.to.toShortStr() +
+                             " (gas:" + String(gp) + ")"
                            : "Transfer failed";
             break;
         }
 
         case TxType::STAKE: {
-            r.fee = TX_BASE_FEE;
+            r.fee = gp;
             uint32_t bal = getBalance(tx.sender);
             if (bal < tx.value + r.fee) {
-                r.message = "Need " + String(tx.value + r.fee) + " (stake+fee), have " + String(bal);
+                r.message = "Need " + String(tx.value + r.fee) + " (stake+gas), have " + String(bal);
                 r.fee = 0;
                 break;
             }
             chargeFee(tx.sender, r.fee);
-            bal = getBalance(tx.sender);            uint8_t res = staking.stake(tx.sender, tx.value, bal);
+            bal = getBalance(tx.sender);
+            uint8_t res = staking.stake(tx.sender, tx.value, bal);
             if (res == 0) {
                 setBalance(tx.sender, bal);
                 r.success = true;
-                r.message = "Staked " + String(tx.value) + " (fee:" + String(r.fee) + ")";
+                r.message = "Staked " + String(tx.value) + " (gas:" + String(r.fee) + ")";
             } else {
                 const char* reasons[] = {"ok","Insufficient balance",
                     "Below minimum stake","Candidate slots full"};
@@ -338,13 +368,13 @@ public:
         }
 
         case TxType::UNSTAKE: {
-            r.fee = TX_BASE_FEE;
+            r.fee = gp;
             chargeFee(tx.sender, r.fee);
             uint8_t res = staking.unstake(tx.sender, tx.value, chainLen);
             if (res == 0) {
                 r.success = true;
                 r.message = "Unstaking " + String(tx.value) +
-                            " (claimable in " + String(UNSTAKE_COOLDOWN) + " blocks, fee:" +
+                            " (claimable in " + String(UNSTAKE_COOLDOWN) + " blocks, gas:" +
                             String(r.fee) + ")";
             } else {
                 r.message = (res==1) ? "Not staking" : "Amount exceeds stake";
@@ -353,13 +383,13 @@ public:
         }
 
         case TxType::CLAIM: {
-            r.fee = TX_BASE_FEE;
+            r.fee = gp;
             chargeFee(tx.sender, r.fee);
             uint32_t claimed = staking.claim(tx.sender, chainLen);
             if (claimed > 0) {
                 setBalance(tx.sender, getBalance(tx.sender) + claimed);
                 r.success = true;
-                r.message = "Claimed " + String(claimed) + " tokens (fee:" + String(r.fee) + ")";
+                r.message = "Claimed " + String(claimed) + " tokens (gas:" + String(r.fee) + ")";
             } else {
                 r.message = "Nothing to claim (cooldown not finished)";
             }
@@ -367,7 +397,9 @@ public:
         }
 
         case TxType::FAUCET: {
-            r.fee = 0;            uint8_t res = faucet(tx.sender);
+            // Ethereum: no equivalent (gasless meta-tx concept)
+            r.fee = 0;
+            uint8_t res = faucet(tx.sender);
             if (res == 0) {
                 r.success = true;
                 r.message = "Received " + String(FAUCET_AMOUNT) + " tokens (free)";
@@ -378,10 +410,10 @@ public:
         }
 
         case TxType::DATA: {
-            r.fee = TX_BASE_FEE;
+            r.fee = gp;
             chargeFee(tx.sender, r.fee);
             r.success = true;
-            r.message = "Data stored (fee:" + String(r.fee) + ")";
+            r.message = "Data stored (gas:" + String(r.fee) + ")";
             break;
         }
 
