@@ -51,7 +51,7 @@ void setup() {
 
     Serial0.println("\n\n\n");
     Serial0.println("========================================");
-    Serial0.println("         MirkoNet v2.0 - DPoS          ");
+    Serial0.println("         MirkoNet v3.0 - PoS            ");
     Serial0.println("    Open Blockchain for ESP32 Mesh      ");
     Serial0.println("========================================");
     Serial0.printf("[Boot] Chip: %s | Cores: %d | Freq: %dMHz\n",
@@ -70,7 +70,8 @@ void setup() {
     bool wifiOk = g_wifi.begin();
     Serial0.printf("[Init]   WiFi result: STA %s\n", wifiOk ? "CONNECTED" : "not connected");
     Serial0.printf("[Init]   AP always active: %s\n", g_wifi.apName.c_str());
-    Serial0.printf("[Init]   Portal: http:    Serial0.printf("[Init]   Heap after WiFi: %d\n", ESP.getFreeHeap());
+    Serial0.printf("[Init]   Portal: http://%s\n", WiFi.softAPIP().toString().c_str());
+    Serial0.printf("[Init]   Heap after WiFi: %d\n", ESP.getFreeHeap());
 
 
     Serial0.println("[Init] Step 3/6: Identity...");
@@ -125,7 +126,8 @@ void setup() {
                   PRUNE_TRIGGER, PRUNE_KEEP, MAX_CHECKPOINTS);
     Serial0.printf("  Grace:      %ds before block production (peer discovery)\n",
                   BOOT_GRACE_PERIOD / 1000);
-    Serial0.println("  Portal:     http:    Serial0.println("  Type 'help' for commands");
+    Serial0.printf("  Portal:     http://%s\n", WiFi.softAPIP().toString().c_str());
+    Serial0.println("  Type 'help' for commands");
     Serial0.println("===============================\n");
 }
 
@@ -522,7 +524,7 @@ void checkBlockProduction() {
                   hasTx ? "" : " heartbeat");
 
     if (g_chain.staking.activeCount > 1) {
-        Serial0.printf("  DPoS: slot %d -> validator %d/%d (%s = US)\n",
+        Serial0.printf("  PoS: slot %d -> validator %d/%d (%s = US)\n",
                       slot,
                       g_chain.staking.getValidatorIndex(g_selfId) + 1,
                       g_chain.staking.activeCount,
@@ -730,7 +732,7 @@ void handleSerial() {
     cmd.toLowerCase();
 
     if (cmd == "help") {
-        Serial0.println("\n====== MirkoNet DPoS Commands ======");
+        Serial0.println("\n====== MirkoNet PoS Commands ======");
         Serial0.println("-- Info --");
         Serial0.println("  status        Node overview");
         Serial0.println("  peers         Connected peers");
@@ -738,15 +740,13 @@ void handleSerial() {
         Serial0.println("  accounts      All accounts + balances");
         Serial0.println("  economy       Economic stats");
         Serial0.println("  heap          Free memory");
-        Serial0.println("-- DPoS --");
+        Serial0.println("-- PoS --");
         Serial0.println("  validators    Active validator set");
-        Serial0.println("  candidates    All candidates + votes");
+        Serial0.println("  candidates    All staking candidates");
         Serial0.println("  faucet        Request " + String(FAUCET_AMOUNT) + " tokens");
         Serial0.println("  stake <amt>   Stake tokens (min " + String(MIN_STAKE) + ")");
         Serial0.println("  unstake <amt> Begin unstake cooldown");
         Serial0.println("  claim         Claim unstaked tokens");
-        Serial0.println("  vote <id>     Vote for candidate (6-char hex)");
-        Serial0.println("  unvote        Remove your vote");
         Serial0.println("-- Tokens --");
         Serial0.println("  balance       Your balance");
         Serial0.println("  transfer <id> <amt>  Send tokens");
@@ -808,7 +808,7 @@ void handleSerial() {
                       100.0*g_chain.staking.totalStaked/g_chain.staking.totalSupply : 0);
         Serial0.printf("  Block reward:  %u tokens/block (new supply)\n", BLOCK_REWARD);
         Serial0.printf("  Gas price:     %u token/gas (CALL/DEPLOY)\n", GAS_PRICE);
-        Serial0.printf("  Base tx fee:   %u token (TRANSFER/STAKE/VOTE)\n", TX_BASE_FEE);
+        Serial0.printf("  Base tx fee:   %u token (TRANSFER/STAKE)\n", TX_BASE_FEE);
         Serial0.printf("  Faucet fee:    %u (free)\n", FAUCET_FEE);
         Serial0.printf("  Min stake:     %u tokens\n", MIN_STAKE);
         Serial0.printf("  Faucet:        %u tokens (cooldown %ds)\n",
@@ -940,28 +940,6 @@ void handleSerial() {
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
         Serial0.println("[TX] Claim submitted (next block)");
-    }
-    else if (cmd == "vote") {
-        if (arg1.length() == 0) {
-            Serial0.println("Usage: vote <6-char-hex-id>");
-            return;
-        }
-        NodeID target;
-        if (!findNodeByShort(arg1, target)) {
-            Serial0.println("Node not found: " + arg1);
-            return;
-        }
-        Transaction tx = buildTx(TxType::VOTE);
-        tx.voteTarget = target;
-        g_chain.addToMempool(tx);
-        g_net.broadcastTx(tx);
-        Serial0.println("[TX] Vote submitted (next block)");
-    }
-    else if (cmd == "unvote") {
-        Transaction tx = buildTx(TxType::UNVOTE);
-        g_chain.addToMempool(tx);
-        g_net.broadcastTx(tx);
-        Serial0.println("[TX] Unvote submitted (next block)");
     }
     else if (cmd == "transfer") {
         if (arg1.length() == 0 || arg2.length() == 0) {
