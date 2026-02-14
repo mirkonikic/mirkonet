@@ -365,6 +365,19 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
         if (result == 0) {
             Serial0.printf("[Gossip] Block #%d APPLIED! height=%d\n",
                           g_scratchBlock.header.index, g_chain.height());
+
+            // Re-gossip CONTRACT_INFO for any deployed contracts in this block
+            // so the info propagates to nodes that may not have heard the original
+            for (int i = 0; i < g_scratchBlock.header.txCount; i++) {
+                if (g_scratchBlock.txns[i].type == TxType::DEPLOY) {
+                    Contract* c = g_chain.findContract(g_scratchBlock.txns[i].data);
+                    if (c && c->active) {
+                        g_net.broadcastContractInfo(c->name, c->host,
+                                                    c->codeHash, c->codeLen);
+                    }
+                }
+            }
+
             g_consensus.updateRole(g_chain.staking);
             g_consensus.lastProducedSlot = g_scratchBlock.header.slot;
             if (g_chain.height() % EPOCH_LENGTH == 0)
@@ -374,11 +387,12 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
         } else {
             const char* reasons[] = {
                 "OK", "wrong index", "prevHash mismatch", "bad hash",
-                "chain full", "not a validator", "wrong slot producer"
+                "chain full", "not a validator", "wrong slot producer",
+                "missing bytecode", "stateRoot mismatch"
             };
             Serial0.printf("[Gossip] Block #%d REJECTED: %s (code=%d)\n",
                           g_scratchBlock.header.index,
-                          result < 7 ? reasons[result] : "unknown",
+                          result < 9 ? reasons[result] : "unknown",
                           result);
             g_led.flashReject();
         }
@@ -386,8 +400,43 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
     }
 
     case MsgType::DEPLOY_DATA: {
+        break;
+    }
 
+    case MsgType::CONTRACT_INFO: {
+        // Receive contract metadata gossip: learn which node hosts a contract
+        if (msg.payloadLen >= 16 + 6 + HASH_SIZE + 2) {
+            char name[16];
+            NodeID host;
+            Hash256 codeHash;
+            uint16_t codeLen;
+            size_t off = 0;
+            memcpy(name, msg.payload + off, 16); off += 16; name[15] = '\0';
+            memcpy(host.id, msg.payload + off, 6); off += 6;
+            memcpy(codeHash.bytes, msg.payload + off, HASH_SIZE); off += HASH_SIZE;
+            memcpy(&codeLen, msg.payload + off, 2); off += 2;
 
+            // Only register if we don't already know about this contract
+            Contract* existing = g_chain.findContract(name);
+            if (!existing) {
+                if (g_chain.contractCount < MAX_CONTRACTS) {
+                    Contract& c = g_chain.contracts[g_chain.contractCount++];
+                    c.initRemote(name, host, host, codeHash);
+                    c.codeLen = codeLen;
+                    Serial0.printf("[Gossip] Learned contract '%s' hosted by %s (%dB, hash=%s)\n",
+                                  name, host.toShortStr().c_str(), codeLen,
+                                  codeHash.toShort().c_str());
+                }
+            } else {
+                // Update host info if needed (in case host migrated)
+                if (existing->host != host) {
+                    Serial0.printf("[Gossip] Updated host for '%s': %s -> %s\n",
+                                  name, existing->host.toShortStr().c_str(),
+                                  host.toShortStr().c_str());
+                    existing->host = host;
+                }
+            }
+        }
         break;
     }
 
@@ -466,25 +515,29 @@ void handleTCPRequest(WiFiClient& client) {
 void fetchCodeForContract(Contract* c) {
     if (!c || c->hasCode) return;
 
+    // Determine if we are the permanent host for this contract
+    bool weAreHost = (c->host == g_selfId);
+
     // Check deploy cache first (covers self-hosted contracts)
     auto* cached = g_deployCache.find(c->name);
     if (cached && cached->hasCode) {
-        if (c->cacheCode(cached->code, cached->codeLen)) {
-            Serial0.printf("[Code] Loaded '%s' from deploy cache (%dB)\n",
-                          c->name, cached->codeLen);
+        if (c->cacheCode(cached->code, cached->codeLen, !weAreHost)) {
+            Serial0.printf("[Code] Loaded '%s' from deploy cache (%dB%s)\n",
+                          c->name, cached->codeLen,
+                          weAreHost ? "" : ", temporary");
             return;
         }
     }
 
     // If we are the host, we should have it in cache - nothing more to try locally
-    if (c->host == g_selfId) {
+    if (weAreHost) {
         Serial0.printf("[Code] We host '%s' but lost bytecode, asking peers...\n", c->name);
     }
 
     // Try the designated host peer first
     IPAddress hostIP;
     bool found = false;
-    if (c->host != g_selfId) {
+    if (!weAreHost) {
         for (int i = 0; i < g_net.peerCount; i++) {
             if (g_net.peers[i].nodeId == c->host && g_net.peers[i].isAlive()) {
                 hostIP = g_net.peers[i].ip;
@@ -498,9 +551,11 @@ void fetchCodeForContract(Contract* c) {
         uint8_t codeBuf[MVM_MAX_CODE];
         uint16_t codeLen;
         if (g_net.requestCode(hostIP, c->name, codeBuf, codeLen)) {
-            if (c->cacheCode(codeBuf, codeLen)) {
-                Serial0.printf("[Code] Cached '%s' from host (%dB, hash verified)\n",
-                              c->name, codeLen);
+            // Non-host nodes cache temporarily for validation only
+            if (c->cacheCode(codeBuf, codeLen, !weAreHost)) {
+                Serial0.printf("[Code] Fetched '%s' from host (%dB, hash verified, %s)\n",
+                              c->name, codeLen,
+                              weAreHost ? "permanent" : "temporary for validation");
                 return;
             } else {
                 Serial0.printf("[Code] HASH MISMATCH for '%s' from host!\n", c->name);
@@ -508,7 +563,7 @@ void fetchCodeForContract(Contract* c) {
         }
     }
 
-    // Fallback: try any alive peer
+    // Fallback: try any alive peer (they might have it cached temporarily too)
     for (int i = 0; i < g_net.peerCount; i++) {
         if (!g_net.peers[i].isAlive()) continue;
         if (found && g_net.peers[i].ip == hostIP) continue;
@@ -516,9 +571,10 @@ void fetchCodeForContract(Contract* c) {
         uint8_t codeBuf[MVM_MAX_CODE];
         uint16_t codeLen;
         if (g_net.requestCode(g_net.peers[i].ip, c->name, codeBuf, codeLen)) {
-            if (c->cacheCode(codeBuf, codeLen)) {
-                Serial0.printf("[Code] Cached '%s' from peer %s (%dB, hash verified)\n",
-                              c->name, g_net.peers[i].nodeId.toShortStr().c_str(), codeLen);
+            if (c->cacheCode(codeBuf, codeLen, !weAreHost)) {
+                Serial0.printf("[Code] Fetched '%s' from peer %s (%dB, hash verified, %s)\n",
+                              c->name, g_net.peers[i].nodeId.toShortStr().c_str(), codeLen,
+                              weAreHost ? "permanent" : "temporary for validation");
                 return;
             }
         }
@@ -579,6 +635,19 @@ void checkBlockProduction() {
 
     if (g_chain.createBlock(g_selfId, slot, txns, txCount)) {
         g_net.broadcastFullBlock(g_chain.lastBlock());
+
+        // Gossip CONTRACT_INFO for any newly deployed contracts in this block
+        const Block& produced = g_chain.lastBlock();
+        for (int i = 0; i < produced.header.txCount; i++) {
+            if (produced.txns[i].type == TxType::DEPLOY) {
+                Contract* c = g_chain.findContract(produced.txns[i].data);
+                if (c && c->active) {
+                    g_net.broadcastContractInfo(c->name, c->host,
+                                                c->codeHash, c->codeLen);
+                }
+            }
+        }
+
         g_consensus.updateRole(g_chain.staking);
         g_led.flashColor(0, 0, 80, 500);
     }

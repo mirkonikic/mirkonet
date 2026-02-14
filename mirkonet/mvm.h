@@ -97,6 +97,7 @@ struct Contract {
     uint32_t     balance;
     bool         active;
     bool         hasCode;
+    bool         tempCode;     // true = code fetched temporarily for validation, not permanently hosted
 
     void init(const char* n, const uint8_t* bytecode, uint16_t len,
               const NodeID& dep, bool isHost) {
@@ -129,13 +130,25 @@ struct Contract {
     }
 
 
-    bool cacheCode(const uint8_t* bytecode, uint16_t len) {
+    // Cache bytecode temporarily for validation (non-host nodes).
+    // Hash is verified against the stored codeHash from deployment.
+    bool cacheCode(const uint8_t* bytecode, uint16_t len, bool temporary = false) {
         Hash256 h = sha256(bytecode, len);
         if (h != codeHash) return false;
         memcpy(code, bytecode, len);
         codeLen = len;
         hasCode = true;
+        tempCode = temporary;
         return true;
+    }
+
+    // Discard temporarily cached bytecode after validation.
+    // Only clears code for non-host nodes that fetched code for validation.
+    void discardTempCode() {
+        if (!tempCode) return;
+        memset(code, 0, MVM_MAX_CODE);
+        hasCode = false;
+        tempCode = false;
     }
 
     uint32_t storageGet(uint32_t key) const {
