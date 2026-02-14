@@ -349,30 +349,6 @@ public:
             break;
         }
 
-        case TxType::VOTE: {
-            r.fee = TX_BASE_FEE;
-            chargeFee(tx.sender, r.fee);
-            uint8_t res = staking.vote(tx.sender, tx.voteTarget);
-            if (res == 0) {
-                r.success = true;
-                r.message = "Voted for " + tx.voteTarget.toShortStr() +
-                            " (fee:" + String(r.fee) + ")";
-            } else {
-                const char* reasons[] = {"ok","Must stake to vote",
-                    "Candidate not found","Already voted","Vote slots full"};
-                r.message = reasons[res];
-            }
-            break;
-        }
-
-        case TxType::UNVOTE: {
-            r.fee = TX_BASE_FEE;
-            chargeFee(tx.sender, r.fee);
-            r.success = true;
-            r.message = "Vote removed (fee:" + String(r.fee) + ")";
-            break;
-        }
-
         case TxType::CLAIM: {
             r.fee = TX_BASE_FEE;
             chargeFee(tx.sender, r.fee);
@@ -433,27 +409,22 @@ public:
         blk.header.epoch = epoch;
         blk.header.txCount = 0;
 
-        uint32_t totalFees = 0;
-
         for (int i = 0; i < txCount; i++) {
             TxResult r = executeTx(txns[i]);
             if (r.success) {
                 blk.txns[blk.header.txCount++] = txns[i];
-                totalFees += r.fee;
                 Serial0.printf("  TX[%d] OK: %s\n", i, r.message.c_str());
                 for (int e = 0; e < vm.eventCount(); e++)
                     Serial0.printf("    Event[%d] = %u\n", e, vm.event(e).value);
             } else {
-                totalFees += r.fee;
                 Serial0.printf("  TX[%d] FAIL: %s\n", i, r.message.c_str());
             }
         }
 
-        uint32_t totalReward = BLOCK_REWARD + totalFees;
-        blk.header.reward = totalReward;
+        blk.header.reward = BLOCK_REWARD + blockFees;
 
         uint32_t valBal = getBalance(validator);
-        setBalance(validator, valBal + BLOCK_REWARD);        setBalance(validator, getBalance(validator) + blockFees);
+        setBalance(validator, valBal + BLOCK_REWARD + blockFees);
         staking.totalSupply += BLOCK_REWARD;
         blk.header.stateRoot = computeStateRoot();
         blk.computeHash();
@@ -462,7 +433,8 @@ public:
         Serial0.printf("[Block] #%d e=%d by %s | %d txns | reward=%d + fees=%d = %d tokens | %s\n",
                       blk.header.index, epoch,
                       validator.toShortStr().c_str(),
-                      blk.header.txCount, BLOCK_REWARD, totalFees, totalReward,
+                      blk.header.txCount, BLOCK_REWARD, blockFees,
+                      BLOCK_REWARD + blockFees,
                       blk.blockHash.toShort().c_str());
 
         if (height() % EPOCH_LENGTH == 0) {
@@ -561,7 +533,7 @@ public:
                 return 6;
             }
 
-            Serial0.printf("[Validate] DPoS OK: slot %d -> %s (validator %d/%d)\n",
+            Serial0.printf("[Validate] PoS OK: slot %d -> %s (validator %d/%d)\n",
                           blk.header.slot,
                           blk.header.validator.toShortStr().c_str(),
                           staking.getValidatorIndex(blk.header.validator) + 1,
@@ -592,8 +564,7 @@ public:
         }
 
         uint32_t valBal = getBalance(blk.header.validator);
-        setBalance(blk.header.validator, valBal + BLOCK_REWARD);
-        setBalance(blk.header.validator, getBalance(blk.header.validator) + blockFees);
+        setBalance(blk.header.validator, valBal + BLOCK_REWARD + blockFees);
         staking.totalSupply += BLOCK_REWARD;
 
         chainLen++;

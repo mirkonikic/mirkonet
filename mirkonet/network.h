@@ -218,6 +218,8 @@ public:
         if (off+HASH_SIZE<=len) { memcpy(blk.header.stateRoot.bytes, data+off, HASH_SIZE); off+=HASH_SIZE; }
         if (off+6<=len) { memcpy(blk.header.validator.id, data+off, 6); off+=6; }
         if (off+1<=len) { blk.header.txCount = data[off++]; }
+        if (blk.header.txCount > MAX_TXN_PER_BLOCK)
+            blk.header.txCount = MAX_TXN_PER_BLOCK;
         if (off+4<=len) { memcpy(&blk.header.slot, data+off, 4); off+=4; }
         if (off+4<=len) { memcpy(&blk.header.epoch, data+off, 4); off+=4; }
         if (off+4<=len) { memcpy(&blk.header.reward, data+off, 4); off+=4; }
@@ -267,6 +269,8 @@ public:
         if (off+16<=len) { memcpy(tx.name, data+off, 16); off+=16; }
         if (off+6<=len) { memcpy(tx.voteTarget.id, data+off, 6); off+=6; }
         if (off+1<=len) { tx.argCount = data[off++]; }
+        if (tx.argCount > MVM_MAX_ARGS)
+            tx.argCount = MVM_MAX_ARGS;
         for (int i=0; i<tx.argCount && off+4<=len; i++)
             memcpy(&tx.args[i], data+off, 4), off+=4;
 

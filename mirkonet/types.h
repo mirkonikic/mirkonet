@@ -74,8 +74,6 @@ enum class TxType : uint8_t {
     TRANSFER    = 0x04,
     STAKE       = 0x10,
     UNSTAKE     = 0x11,
-    VOTE        = 0x12,
-    UNVOTE      = 0x13,
     CLAIM       = 0x14,
     FAUCET      = 0x15,
 };
@@ -224,17 +222,10 @@ struct StakeInfo {
     uint32_t stakedAmount;
     uint32_t unstakingAmount;
     uint32_t unstakeBlock;
-    uint32_t votesReceived;
     bool     isCandidate;
     bool     used;
 };
 
-struct VoteRecord {
-    NodeID   voter;
-    NodeID   candidate;
-    uint32_t weight;
-    bool     used;
-};
 
 struct ContractAddr {
     uint8_t bytes[4];
