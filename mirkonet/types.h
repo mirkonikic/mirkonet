@@ -138,6 +138,8 @@ struct DeployCache {
     bool storeMeta(const char* name, uint16_t codeLen, const Hash256& hash) {
         Entry* e = findOrAlloc(name);
         if (!e) return false;
+        // Don't overwrite an entry that already has actual bytecode
+        if (e->used && e->hasCode) return true;
         strncpy(e->name, name, 15); e->name[15] = '\0';
         e->codeLen = codeLen;
         e->codeHash = hash;
