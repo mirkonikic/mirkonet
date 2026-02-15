@@ -3,6 +3,13 @@
 #include "mvm.h"
 #include "staking.h"
 
+// LED feedback callback for validation stages
+// Set by mirkonet.ino to wire blockchain validation events to NeoPixel LED.
+// Callback receives: event type (0=validation pass, 1=rejection, 2=tx success, 3=tx fail, 4=tx type flash)
+// and an optional parameter (tx type for event 4, VM status for event 2/3).
+typedef void (*BlockchainLedCallback)(uint8_t event, uint8_t param);
+static BlockchainLedCallback g_blockchainLedCb = nullptr;
+
 
 struct AccountBalance {
     NodeID   owner;
@@ -466,7 +473,14 @@ public:
             r.message = "Unknown tx type";
         }
 
-        if (r.success) incrementNonce(tx.sender);
+        if (r.success) {
+            incrementNonce(tx.sender);
+            // LED: green flash for successful tx
+            if (g_blockchainLedCb) g_blockchainLedCb(2, (uint8_t)tx.type);
+        } else {
+            // LED: red flash for failed tx
+            if (g_blockchainLedCb) g_blockchainLedCb(3, (uint8_t)tx.type);
+        }
         return r;
     }
 
@@ -709,6 +723,9 @@ public:
 
         Serial0.printf("[Validate] StateRoot VERIFIED: %s\n",
                       computedRoot.toShort().c_str());
+
+        // LED: bright green for state root verification
+        if (g_blockchainLedCb) g_blockchainLedCb(0, 0);
 
         // Record block production for slashing/downtime tracking
         staking.recordBlockProduced(blk.header.validator, blk.header.index);
