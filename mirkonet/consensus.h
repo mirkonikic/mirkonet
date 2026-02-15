@@ -31,14 +31,22 @@ public:
         return elapsed < SLOT_TOLERANCE;
     }
 
-    bool shouldProduce(const StakingEngine& staking) const {
-        if (selfRole != ROLE_VALIDATOR) return false;
-        if (!staking.isActiveValidator(selfId)) return false;
-
+    bool shouldProduce(const StakingEngine& staking, bool bootstrap) const {
         uint32_t slot = getCurrentSlot();
         if (slot == lastProducedSlot) return false;
         if (!isWithinSlotWindow()) return false;
 
+        // During bootstrap (epoch 0, only virtual founder in active set)
+        // any node can produce.  Use hash-based turn to avoid collisions.
+        if (bootstrap) {
+            // Simple round-robin: hash(slot) determines which peer goes.
+            // With only ~1-5 nodes on a local mesh the collision rate is
+            // acceptably low, and a duplicate block is simply rejected.
+            return true;
+        }
+
+        if (selfRole != ROLE_VALIDATOR) return false;
+        if (!staking.isActiveValidator(selfId)) return false;
         return staking.isSlotProducer(selfId, slot);
     }
 

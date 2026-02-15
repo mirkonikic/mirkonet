@@ -23,6 +23,14 @@
 #define UNSTAKE_COOLDOWN    50
 #define GENESIS_SUPPLY      50000
 #define GENESIS_PER_NODE    10000
+
+// Hardcoded genesis founder — a virtual identity shared by all nodes.
+// No real node has this MAC, so genesis is 100% deterministic.
+// Spells "MIRKO\x01" — recognisable in logs.
+#define GENESIS_FOUNDER_BYTES { 0x4D, 0x49, 0x52, 0x4B, 0x4F, 0x01 }
+
+// Number of bootstrap blocks (epoch 0) where any node can produce.
+#define BOOTSTRAP_HEIGHT    EPOCH_LENGTH
 #define FAUCET_AMOUNT       50
 #define FAUCET_COOLDOWN     60000
 #define MAX_TXN_PER_BLOCK   4

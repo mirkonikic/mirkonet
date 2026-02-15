@@ -27,12 +27,11 @@ uint32_t g_lastSync = 0;
 uint32_t g_txNonce = 0;
 
 static Block g_scratchBlock;
-static Block g_scratchBlock2;
 
 bool   g_assembling = false;
 String g_asmBuffer, g_asmName;
 
-#define GENESIS_NODES 5
+// (GENESIS_NODES removed — genesis is now hardcoded, see config.h)
 
 Transaction buildTx(TxType type) {
     Transaction tx;
@@ -554,8 +553,9 @@ void setup() {
 
 
     Serial0.println("[Init] Step 5/7: Blockchain genesis...");
-    g_chain.initGenesis(g_selfId);
+    g_chain.initGenesis();  // hardcoded — identical on every node
     g_led.flashInitGenesis();
+    Serial0.printf("[Init]   Genesis hash: %s\n", g_chain.chain[0].blockHash.toShort().c_str());
     Serial0.printf("[Init]   Chain height: %d\n", g_chain.height());
     Serial0.printf("[Init]   Accounts: %d\n", g_chain.accountCount);
     Serial0.printf("[Init]   Heap after genesis: %d\n", ESP.getFreeHeap());
@@ -803,50 +803,13 @@ void handleDiscovery(const P2PNetwork::RecvMsg& msg) {
         g_led.flashPeer();
     }
 
-    if (g_chain.height() < 5 && g_chain.getBalance(msg.sender) == 0) {
-        int genesisCount = 0;
-        for (int i = 0; i < g_chain.accountCount; i++) {
-            if (g_chain.accounts[i].used) {
-                const StakeInfo* s = g_chain.staking.findStake(g_chain.accounts[i].owner);
-                if (s && s->stakedAmount >= GENESIS_PER_NODE/2) genesisCount++;
-            }
-        }
-        if (genesisCount < GENESIS_NODES) {
-            g_chain.addGenesisNode(msg.sender);
-            g_led.flashGenesisNode();
-        }
-    }
+    // Genesis is hardcoded and identical on all nodes — no negotiation
+    // needed.  Peer discovery only tracks height/role for sync.
 
 
 
 
 
-
-
-    // During boot grace period, compare genesis with every new peer
-    // (not just the first) so all nodes converge to the lowest genesis hash
-    if ((millis() - g_consensus.genesisTime) < BOOT_GRACE_PERIOD) {
-
-        if (g_net.requestBlock(msg.senderIP, 0, g_scratchBlock2)) {
-            if (g_scratchBlock2.blockHash != g_chain.chain[0].blockHash) {
-
-                int cmp = memcmp(g_chain.chain[0].blockHash.bytes,
-                                g_scratchBlock2.blockHash.bytes, HASH_SIZE);
-                if (cmp > 0) {
-                    Serial0.println("[Discovery] Peer has lower genesis hash — adopting");
-                    g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
-                    g_consensus.updateRole(g_chain.staking);
-                    g_led.flashGenesisAdopt();
-                } else {
-                    Serial0.println("[Discovery] Our genesis hash is lower — we win, peer should adopt");
-                    g_led.flashGenesisWin();
-                }
-            } else {
-                Serial0.println("[Discovery] Same genesis! Already in sync.");
-                g_led.flashGenesisOk();
-            }
-        }
-    }
 }
 
 
@@ -1060,6 +1023,26 @@ void handleTCPRequest(WiFiClient& client) {
             g_led.flashTxFail();
         }
     }
+    else if (type == MsgType::CHECKPOINT_REQ && len >= 7) {
+        Serial0.println("[TCP] Checkpoint requested");
+        g_led.flashTcpBlockReq();
+
+        if (g_chain.checkpointCount > 0) {
+            static uint8_t resp[1500]; size_t off = 0;
+            resp[off++] = (uint8_t)MsgType::CHECKPOINT_RESP;
+            memcpy(resp + off, g_selfId.id, 6); off += 6;
+
+            uint16_t stateLen = g_chain.serializeState(resp + off, 1400 - off);
+            off += stateLen;
+            client.write(resp, off);
+            client.flush();
+            Serial0.printf("[TCP] Sent checkpoint (%d bytes state)\n", stateLen);
+            g_led.flashTcpSent();
+        } else {
+            Serial0.println("[TCP] No checkpoint available yet");
+            g_led.flashTxFail();
+        }
+    }
     else if (type == MsgType::CODE_REQ && len >= 23) {
 
         char name[16];
@@ -1197,20 +1180,53 @@ void prefetchCodeForTxns(const Transaction* txns, uint8_t count) {
 
 #define EMPTY_BLOCK_INTERVAL  10
 
-void checkBlockProduction() {
-    g_consensus.updateRole(g_chain.staking);
+// During bootstrap, auto-submit faucet + stake so the node can
+// start producing blocks on the real PoS schedule.
+static bool g_bootstrapDone = false;
 
+void autoBootstrap() {
+    if (g_bootstrapDone) return;
+    if (g_chain.getBalance(g_selfId) >= GENESIS_PER_NODE) {
+        // Already have tokens — may just need to stake
+        const StakeInfo* si = g_chain.staking.findStake(g_selfId);
+        if (si && si->stakedAmount >= MIN_STAKE) {
+            g_bootstrapDone = true;
+            return;
+        }
+        // Submit stake tx
+        Transaction tx = buildTx(TxType::STAKE);
+        tx.value = GENESIS_PER_NODE / 2;
+        g_chain.addToMempool(tx);
+        g_net.broadcastTx(tx);
+        Serial0.printf("[Bootstrap] Auto-stake %u submitted\n", tx.value);
+        return;
+    }
+    // Request faucet first
+    if (g_chain.getBalance(g_selfId) == 0) {
+        // Give ourselves GENESIS_PER_NODE directly during bootstrap
+        // (like the old addGenesisNode but through a proper faucet tx)
+        Transaction tx = buildTx(TxType::FAUCET);
+        g_chain.addToMempool(tx);
+        g_net.broadcastTx(tx);
+        Serial0.println("[Bootstrap] Auto-faucet submitted");
+    }
+}
+
+void checkBlockProduction() {
+    bool bootstrap = g_chain.isBootstrap();
+    g_consensus.updateRole(g_chain.staking);
 
     if (millis() - g_consensus.genesisTime < BOOT_GRACE_PERIOD) return;
 
-    if (!g_consensus.shouldProduce(g_chain.staking)) {
+    // During bootstrap, auto-submit faucet + stake
+    if (bootstrap) autoBootstrap();
+
+    if (!g_consensus.shouldProduce(g_chain.staking, bootstrap)) {
         // Track missed blocks for the expected producer (downtime detection)
         uint32_t currentSlot = g_consensus.getCurrentSlot();
-        if (g_chain.staking.activeCount > 1) {
+        if (!bootstrap && g_chain.staking.activeCount > 1) {
             NodeID expected = g_chain.staking.getSlotProducer(currentSlot);
             if (expected != g_selfId) {
-                // Another validator was supposed to produce; if we see the slot
-                // pass without a block, increment their missed counter
                 StakeInfo* si = g_chain.staking.findStake(expected);
                 if (si && si->used && !si->jailed) {
                     si->missedBlocks++;
@@ -1235,11 +1251,12 @@ void checkBlockProduction() {
     g_consensus.lastProducedSlot = slot;
 
     g_led.flashProducing();
-    Serial0.printf("\n=== PRODUCING BLOCK (slot %d, epoch %d, txns=%d%s) ===\n",
+    Serial0.printf("\n=== PRODUCING BLOCK (slot %d, epoch %d, txns=%d%s%s) ===\n",
                   slot, g_chain.currentEpoch(), g_chain.mempoolSize,
-                  hasTx ? "" : " heartbeat");
+                  hasTx ? "" : " heartbeat",
+                  bootstrap ? " BOOTSTRAP" : "");
 
-    if (g_chain.staking.activeCount > 1) {
+    if (!bootstrap && g_chain.staking.activeCount > 1) {
         Serial0.printf("  PoS: slot %d -> validator %d/%d (%s = US)\n",
                       slot,
                       g_chain.staking.getValidatorIndex(g_selfId) + 1,
@@ -1312,12 +1329,53 @@ void trySync() {
     g_led.setState(LED_SYNCING);
     g_led.flashSyncStart();
 
+    // Try to get the next block we need
     if (!g_net.requestBlock(best->ip, ourHeight, g_scratchBlock)) {
-        Serial0.println("[Sync] Failed to download block, will retry");
-        g_led.flashSyncFail();
+        // Peer doesn't have that block (probably pruned).
+        // Fall back to checkpoint sync.
+        Serial0.println("[Sync] Peer doesn't have our next block — trying checkpoint sync");
+        g_led.flashSyncDiverge();
+
+        static uint8_t ckptBuf[1400];
+        uint16_t ckptLen = 0;
+        if (g_net.requestCheckpoint(best->ip, ckptBuf, ckptLen)) {
+            if (g_chain.deserializeCheckpointState(ckptBuf, ckptLen)) {
+                Serial0.printf("[Sync] Checkpoint applied! Chain offset=%d\n",
+                              g_chain.chainOffset);
+                g_consensus.updateRole(g_chain.staking);
+                g_led.flashSyncApplied();
+
+                // Now download recent blocks from checkpoint onwards
+                for (uint32_t i = 0; i < 10; i++) {
+                    uint32_t idx = g_chain.height();
+                    if (idx >= peerHeight) break;
+                    if (!g_net.requestBlock(best->ip, idx, g_scratchBlock)) break;
+                    prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
+                    uint8_t r = g_chain.applyNetworkBlock(g_scratchBlock);
+                    if (r == 0) {
+                        Serial0.printf("[Sync] Applied #%d, height=%d\n", idx, g_chain.height());
+                        g_consensus.updateRole(g_chain.staking);
+                        g_led.flashSyncApplied();
+                    } else {
+                        Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", idx, r);
+                        g_led.flashSyncReject();
+                        break;
+                    }
+                }
+                Serial0.printf("[Sync] Checkpoint sync done. Height: %d\n", g_chain.height());
+                g_led.flashSyncDone();
+            } else {
+                Serial0.println("[Sync] Checkpoint deserialization failed");
+                g_led.flashSyncFail();
+            }
+        } else {
+            Serial0.println("[Sync] Checkpoint request failed, will retry");
+            g_led.flashSyncFail();
+        }
         return;
     }
 
+    // Got the block — try to apply it
     prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
     uint8_t result = g_chain.applyNetworkBlock(g_scratchBlock);
 
@@ -1329,76 +1387,33 @@ void trySync() {
         return;
     }
 
-    if (result != 2) {
-        Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", ourHeight, result);
-        g_led.flashSyncReject();
-        return;
-    }
-
-
-    Serial0.println("[Sync] Chain divergence! Downloading peer's genesis...");
-    g_led.flashSyncDiverge();
-
-    if (!g_net.requestBlock(best->ip, 0, g_scratchBlock2)) {
-        Serial0.println("[Sync] Can't download peer's genesis, will retry");
-        g_led.flashSyncFail();
-        return;
-    }
-
-    Hash256 ourGenesisHash = g_chain.chain[0].blockHash;
-    Hash256 peerGenesisHash = g_scratchBlock2.blockHash;
-
-    Serial0.printf("[Sync] Our genesis:  %s\n", ourGenesisHash.toShort().c_str());
-    Serial0.printf("[Sync] Peer genesis: %s\n", peerGenesisHash.toShort().c_str());
-
-    int cmp = memcmp(ourGenesisHash.bytes, peerGenesisHash.bytes, HASH_SIZE);
-
-    if (cmp < 0) {
-        Serial0.println("[Sync] Our genesis wins (lower hash). Peer should sync to us.");
-        return;
-    }
-    if (cmp == 0) {
-        // Same genesis but different block history — fork!
-        // Peer has a longer chain, so adopt theirs by resetting to genesis
-        // and re-downloading their chain.
-        Serial0.printf("[Sync] Same genesis, chain forked. Peer is ahead (%d > %d). Reorging...\n",
-                      peerHeight, ourHeight);
-
+    if (result == 2) {
+        // prevHash mismatch — chain forked.  Since genesis is identical
+        // on all nodes, this is a real fork.  Reset and re-sync.
+        Serial0.printf("[Sync] Chain forked at #%d. Peer is ahead (%d > %d). Reorging...\n",
+                      ourHeight, peerHeight, ourHeight);
         g_led.flashSyncReorg();
-        g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
-        // Also add any known peers as genesis nodes
-        for (int i = 0; i < g_net.peerCount; i++) {
-            NodeID founder = g_scratchBlock2.header.validator;
-            if (g_net.peers[i].active && !(g_net.peers[i].nodeId == founder)
-                && !(g_net.peers[i].nodeId == g_selfId))
-                g_chain.addGenesisNode(g_net.peers[i].nodeId);
-        }
+
+        g_chain.resetToGenesis();
         g_consensus.updateRole(g_chain.staking);
 
-        Serial0.printf("[Sync] Reorg: reset to genesis, rebuilding from peer...\n");
-
-        // Download and apply peer's chain from block #1 onwards.
-        // Use addBlock which validates prevHash+blockHash integrity
-        // but skips stateRoot/validator checks (acceptable during
-        // reorg since we're adopting a longer valid chain).
+        // Download peer's chain block by block (up to 10 per sync cycle)
         for (uint32_t i = 0; i < 10; i++) {
             uint32_t idx = g_chain.height();
             if (idx >= peerHeight) break;
-
             if (!g_net.requestBlock(best->ip, idx, g_scratchBlock)) {
                 Serial0.printf("[Sync] Download failed at #%d\n", idx);
                 break;
             }
-
             prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
-
-            if (g_chain.addBlock(g_scratchBlock)) {
+            uint8_t r = g_chain.applyNetworkBlock(g_scratchBlock);
+            if (r == 0) {
                 Serial0.printf("[Sync] Reorg applied #%d, height=%d\n",
                               idx, g_chain.height());
                 g_consensus.updateRole(g_chain.staking);
                 g_led.flashSyncApplied();
             } else {
-                Serial0.printf("[Sync] Reorg: block #%d failed validation\n", idx);
+                Serial0.printf("[Sync] Reorg: block #%d failed (code=%d)\n", idx, r);
                 g_led.flashSyncReject();
                 break;
             }
@@ -1410,42 +1425,8 @@ void trySync() {
         return;
     }
 
-
-    Serial0.println("[Sync] Peer's genesis wins. Adopting peer's chain...");
-    g_led.flashSyncAdopt();
-
-    g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
-    g_consensus.updateRole(g_chain.staking);
-
-    Serial0.printf("[Sync] Genesis adopted. Height: %d, downloading blocks...\n",
-                  g_chain.height());
-
-
-    for (uint32_t i = 0; i < 10; i++) {
-        uint32_t idx = g_chain.height();
-        if (idx >= peerHeight) break;
-
-        if (!g_net.requestBlock(best->ip, idx, g_scratchBlock)) {
-            Serial0.printf("[Sync] Download failed at #%d\n", idx);
-            break;
-        }
-
-        prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
-        uint8_t r = g_chain.applyNetworkBlock(g_scratchBlock);
-        if (r == 0) {
-            Serial0.printf("[Sync] Applied #%d, height=%d\n", idx, g_chain.height());
-            g_consensus.updateRole(g_chain.staking);
-            g_led.flashSyncApplied();
-        } else {
-            Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", idx, r);
-            g_led.flashSyncReject();
-            break;
-        }
-    }
-
-    Serial0.printf("[Sync] Resync done. Height: %d (peer: %d)\n",
-                  g_chain.height(), peerHeight);
-    g_led.flashSyncDone();
+    Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", ourHeight, result);
+    g_led.flashSyncReject();
 }
 
 
