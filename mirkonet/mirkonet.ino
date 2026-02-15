@@ -366,6 +366,15 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
             Serial0.printf("[Gossip] Block #%d APPLIED! height=%d\n",
                           g_scratchBlock.header.index, g_chain.height());
 
+            // Print structured logs from VM execution
+            for (uint8_t l = 0; l < g_chain.vm.logCount(); l++) {
+                const MVMLog& log = g_chain.vm.log(l);
+                Serial0.printf("    Log[%d] data=%u topics=%d", l, log.data, log.topicCount);
+                for (int t = 0; t < log.topicCount; t++)
+                    Serial0.printf(" t%d=%u", t, log.topics[t]);
+                Serial0.println();
+            }
+
             // Re-gossip CONTRACT_INFO for any deployed contracts in this block
             // so the info propagates to nodes that may not have heard the original
             for (int i = 0; i < g_scratchBlock.header.txCount; i++) {
@@ -601,7 +610,21 @@ void checkBlockProduction() {
 
     if (millis() - g_consensus.genesisTime < BOOT_GRACE_PERIOD) return;
 
-    if (!g_consensus.shouldProduce(g_chain.staking)) return;
+    if (!g_consensus.shouldProduce(g_chain.staking)) {
+        // Track missed blocks for the expected producer (downtime detection)
+        uint32_t currentSlot = g_consensus.getCurrentSlot();
+        if (g_chain.staking.activeCount > 1) {
+            NodeID expected = g_chain.staking.getSlotProducer(currentSlot);
+            if (expected != g_selfId) {
+                // Another validator was supposed to produce; if we see the slot
+                // pass without a block, increment their missed counter
+                StakeInfo* si = g_chain.staking.findStake(expected);
+                if (si && si->used && !si->jailed)
+                    si->missedBlocks++;
+            }
+        }
+        return;
+    }
 
     uint32_t slot = g_consensus.getCurrentSlot();
 
@@ -634,6 +657,15 @@ void checkBlockProduction() {
     prefetchCodeForTxns(txns, txCount);
 
     if (g_chain.createBlock(g_selfId, slot, txns, txCount)) {
+        // Print structured logs
+        for (uint8_t l = 0; l < g_chain.vm.logCount(); l++) {
+            const MVMLog& log = g_chain.vm.log(l);
+            Serial0.printf("    Log[%d] data=%u topics=%d", l, log.data, log.topicCount);
+            for (int t = 0; t < log.topicCount; t++)
+                Serial0.printf(" t%d=%u", t, log.topics[t]);
+            Serial0.println();
+        }
+
         g_net.broadcastFullBlock(g_chain.lastBlock());
 
         // Gossip CONTRACT_INFO for any newly deployed contracts in this block
@@ -715,7 +747,64 @@ void trySync() {
         return;
     }
     if (cmp == 0) {
-        Serial0.println("[Sync] Same genesis but prevHash mismatch?! Unexpected.");
+        // Same genesis but different block history — fork!
+        // Peer has a longer chain, so adopt theirs by resetting to genesis
+        // and re-downloading their chain.
+        Serial0.printf("[Sync] Same genesis, chain forked. Peer is ahead (%d > %d). Reorging...\n",
+                      peerHeight, ourHeight);
+
+        // g_scratchBlock2 already has peer's genesis from the download above
+        // Full reset: wipe everything and adopt peer's genesis
+        g_chain.resetState();
+        g_chain.chain[0] = g_scratchBlock2;
+        g_chain.chainLen = 1;
+
+        // Rebuild genesis state: founder gets initial allocation
+        NodeID founder = g_scratchBlock2.header.validator;
+        g_chain.setBalance(founder, GENESIS_PER_NODE);
+        g_chain.staking.totalSupply = GENESIS_PER_NODE;
+        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
+        g_chain.setBalance(founder, GENESIS_PER_NODE - stakeAmt);
+        g_chain.staking.addGenesisValidator(founder, stakeAmt);
+
+        // Add ourselves and known peers as genesis nodes
+        if (!(g_selfId == founder))
+            g_chain.addGenesisNode(g_selfId);
+        for (int i = 0; i < g_net.peerCount; i++) {
+            if (g_net.peers[i].active && !(g_net.peers[i].nodeId == founder))
+                g_chain.addGenesisNode(g_net.peers[i].nodeId);
+        }
+        g_consensus.updateRole(g_chain.staking);
+
+        Serial0.printf("[Sync] Reorg: reset to genesis, rebuilding from peer...\n");
+
+        // Download and apply peer's chain from block #1 onwards.
+        // Use addBlock which validates prevHash+blockHash integrity
+        // but skips stateRoot/validator checks (acceptable during
+        // reorg since we're adopting a longer valid chain).
+        for (uint32_t i = 0; i < 10; i++) {
+            uint32_t idx = g_chain.height();
+            if (idx >= peerHeight) break;
+
+            if (!g_net.requestBlock(best->ip, idx, g_scratchBlock)) {
+                Serial0.printf("[Sync] Download failed at #%d\n", idx);
+                break;
+            }
+
+            prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
+
+            if (g_chain.addBlock(g_scratchBlock)) {
+                Serial0.printf("[Sync] Reorg applied #%d, height=%d\n",
+                              idx, g_chain.height());
+                g_consensus.updateRole(g_chain.staking);
+            } else {
+                Serial0.printf("[Sync] Reorg: block #%d failed validation\n", idx);
+                break;
+            }
+        }
+
+        Serial0.printf("[Sync] Reorg done. Height: %d (peer: %d)\n",
+                      g_chain.height(), peerHeight);
         return;
     }
 

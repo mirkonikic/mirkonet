@@ -94,6 +94,23 @@ public:
             else if (mn == "BALANCE")   r.code[off++] = BYTE_BALANCE;
             else if (mn == "CALLVALUE") r.code[off++] = BYTE_CALLVALUE;
             else if (mn == "SHA3")      r.code[off++] = BYTE_SHA3;
+            // --- New opcodes ---
+            else if (mn == "LOG0")      r.code[off++] = BYTE_LOG(0);
+            else if (mn == "LOG1")      r.code[off++] = BYTE_LOG(1);
+            else if (mn == "LOG2")      r.code[off++] = BYTE_LOG(2);
+            else if (mn == "LOG3")      r.code[off++] = BYTE_LOG(3);
+            else if (mn == "LOG4")      r.code[off++] = BYTE_LOG(4);
+            else if (mn == "ISZERO")    r.code[off++] = BYTE_ISZERO;
+            else if (mn == "MLOAD")     r.code[off++] = BYTE_MLOAD;
+            else if (mn == "MSTORE")    r.code[off++] = BYTE_MSTORE;
+            else if (mn == "ADDRESS")   r.code[off++] = BYTE_ADDRESS;
+            else if (mn == "ORIGIN")    r.code[off++] = BYTE_ORIGIN;
+            else if (mn == "NUMBER")    r.code[off++] = BYTE_NUMBER;
+            else if (mn == "TIMESTAMP") r.code[off++] = BYTE_TIMESTAMP;
+            else if (mn == "GASLEFT")   r.code[off++] = BYTE_GASLEFT;
+            else if (mn == "CALL")      r.code[off++] = BYTE_CALL;
+            else if (mn == "DELEGATECALL" || mn == "DCALL")
+                                        r.code[off++] = BYTE_DCALL;
 
 
             else if (mn == "PUSH") {
@@ -228,6 +245,24 @@ public:
             case OP5_BALANCE:   out += "BALANCE\n"; pc++; break;
             case OP5_CALLVALUE: out += "CALLVALUE\n"; pc++; break;
             case OP5_SHA3:      out += "SHA3\n"; pc++; break;
+            case OP5_LOG:
+                out += "LOG" + String(mod) + "\n"; pc++; break;
+            case OP5_EXT:
+                switch (mod) {
+                case EXT_ISZERO:    out += "ISZERO\n"; break;
+                case EXT_MLOAD:     out += "MLOAD\n"; break;
+                case EXT_MSTORE:    out += "MSTORE\n"; break;
+                case EXT_ADDRESS:   out += "ADDRESS\n"; break;
+                case EXT_ORIGIN:    out += "ORIGIN\n"; break;
+                case EXT_NUMBER:    out += "NUMBER\n"; break;
+                case EXT_TIMESTAMP: out += "TIMESTAMP\n"; break;
+                case EXT_GASLEFT:   out += "GASLEFT\n"; break;
+                default: out += "EXT?" + String(mod) + "\n"; break;
+                }
+                pc++; break;
+            case OP5_XCALL:
+                out += (mod == 0) ? "CALL\n" : "DELEGATECALL\n";
+                pc++; break;
             default: out += "??(0x" + String(byte, HEX) + ")\n"; pc++; break;
             }
         }

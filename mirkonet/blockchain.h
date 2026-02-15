@@ -299,9 +299,27 @@ public:
             ctx.argCount = tx.argCount;
             memcpy(ctx.args, tx.args, tx.argCount * 4);
             ctx.callValue = tx.value;
+            ctx.blockNumber = height();
+            ctx.blockTimestamp = millis();
+            ctx.origin = tx.sender;
 
-            // Apply gasLimit from tx (Ethereum style)
-            uint32_t savedGasMax = MVM_MAX_GAS;
+            // Set up contract resolver for cross-contract calls
+            g_contractResolver = [](const char* name) -> Contract* {
+                // This lambda is stateless; it relies on the global g_chain
+                // being accessible. Since blockchain.h defines it inline,
+                // we use extern to access the global instance.
+                extern BlockchainState g_chain;
+                if (!name) return nullptr;
+                // Special index-based lookup: "\x01N" returns contract at index N
+                if (name[0] == '\x01') {
+                    int idx = atoi(name + 1);
+                    if (idx >= 0 && idx < g_chain.contractCount)
+                        return &g_chain.contracts[idx];
+                    return nullptr;
+                }
+                return g_chain.findContract(name);
+            };
+
             MVMStatus st = vm.execute(*c, ctx);
             r.vmStatus = st;
             r.gasUsed = vm.gasUsed();
@@ -461,6 +479,10 @@ public:
         uint32_t valBal = getBalance(validator);
         setBalance(validator, valBal + BLOCK_REWARD + blockFees);
         staking.totalSupply += BLOCK_REWARD;
+
+        // Record block production for slashing/downtime tracking
+        staking.recordBlockProduced(validator, logicalIdx);
+
         blk.header.stateRoot = computeStateRoot();
         blk.computeHash();
         chainLen++;
@@ -638,6 +660,9 @@ public:
         Serial0.printf("[Validate] StateRoot VERIFIED: %s\n",
                       computedRoot.toShort().c_str());
 
+        // Record block production for slashing/downtime tracking
+        staking.recordBlockProduced(blk.header.validator, blk.header.index);
+
         // Discard temporarily fetched bytecode from non-host contracts.
         // This is the key resource optimization: only the host node
         // permanently stores the bytecode, other nodes fetch it
@@ -656,6 +681,16 @@ public:
             uint32_t newEpoch = height() / EPOCH_LENGTH;
             Serial0.printf("\n==== EPOCH TRANSITION: %d -> %d ====\n",
                           newEpoch - 1, newEpoch);
+
+            // Check for validator downtime before election
+            for (int v = 0; v < staking.activeCount; v++) {
+                StakeInfo* si = staking.findStake(staking.activeSet[v]);
+                if (si && si->missedBlocks >= DOWNTIME_THRESHOLD) {
+                    staking.checkDowntime(staking.activeSet[v],
+                                         blk.header.index, newEpoch);
+                }
+            }
+
             staking.runElection(newEpoch);
         }
 
@@ -674,6 +709,18 @@ public:
 
         Serial0.println("[Sync] Replacing genesis with peer's genesis");
 
+        resetState();
+
+        chain[0] = peerGenesis;
+        chainLen = 1;
+
+        Serial0.printf("[Sync] New genesis hash: %s\n",
+                      peerGenesis.blockHash.toShort().c_str());
+        return true;
+    }
+
+    // Reset all state back to empty (preserving nothing)
+    void resetState() {
         memset(accounts, 0, sizeof(accounts));
         accountCount = 0;
         memset(contracts, 0, sizeof(contracts));
@@ -684,12 +731,36 @@ public:
         chainOffset = 0;
         checkpointCount = 0;
         finalizedCount = 0;
+    }
 
-        chain[0] = peerGenesis;
+    // Reset chain back to genesis, wiping blocks 1+ and rebuilding genesis state
+    // Used for same-genesis fork resolution
+    bool resetToGenesis(const NodeID& selfId) {
+        if (chainLen == 0) return false;
+
+        Block genesis = chain[0];  // save genesis block
+
+        Serial0.println("[Reorg] Resetting to genesis for chain reorg");
+
+        resetState();
+
+        chain[0] = genesis;
         chainLen = 1;
 
-        Serial0.printf("[Sync] New genesis hash: %s\n",
-                      peerGenesis.blockHash.toShort().c_str());
+        // Rebuild genesis state from the founder
+        setBalance(genesis.header.validator, GENESIS_PER_NODE);
+        staking.totalSupply = GENESIS_PER_NODE;
+        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
+        setBalance(genesis.header.validator, GENESIS_PER_NODE - stakeAmt);
+        staking.addGenesisValidator(genesis.header.validator, stakeAmt);
+
+        // Re-add ourselves if we're not the genesis founder
+        if (!(selfId == genesis.header.validator)) {
+            addGenesisNode(selfId);
+        }
+
+        Serial0.printf("[Reorg] Reset to genesis hash=%s, height=%d\n",
+                      genesis.blockHash.toShort().c_str(), height());
         return true;
     }
 

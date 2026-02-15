@@ -226,6 +226,12 @@ struct StakeInfo {
     uint32_t unstakeBlock;
     bool     isCandidate;
     bool     used;
+    // Slashing state
+    bool     jailed;            // validator is jailed and cannot produce blocks
+    uint32_t jailUntilEpoch;    // epoch when jail ends
+    uint32_t slashCount;        // total times slashed
+    uint32_t missedBlocks;      // consecutive missed blocks (for downtime detection)
+    uint32_t lastProducedBlock; // last block this validator produced
 };
 
 
