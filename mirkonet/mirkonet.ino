@@ -727,20 +727,9 @@ void handleDiscovery(const P2PNetwork::RecvMsg& msg) {
                 int cmp = memcmp(g_chain.chain[0].blockHash.bytes,
                                 g_scratchBlock2.blockHash.bytes, HASH_SIZE);
                 if (cmp > 0) {
-
                     Serial0.println("[Discovery] Peer has lower genesis hash — adopting");
-                    g_chain.replaceGenesis(g_scratchBlock2);
-                    g_chain.setBalance(g_scratchBlock2.header.validator, GENESIS_PER_NODE);
-                    g_chain.staking.totalSupply = GENESIS_PER_NODE;
-                    uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-                    g_chain.setBalance(g_scratchBlock2.header.validator,
-                                       GENESIS_PER_NODE - stakeAmt);
-                    g_chain.staking.addGenesisValidator(g_scratchBlock2.header.validator, stakeAmt);
-                    g_chain.addGenesisNode(g_selfId);
+                    g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
                     g_consensus.updateRole(g_chain.staking);
-                    Serial0.printf("[Discovery] Adopted genesis from %s, hash=%s\n",
-                                  msg.sender.toShortStr().c_str(),
-                                  g_scratchBlock2.blockHash.toShort().c_str());
                 } else {
                     Serial0.println("[Discovery] Our genesis hash is lower — we win, peer should adopt");
                 }
@@ -1194,25 +1183,12 @@ void trySync() {
         Serial0.printf("[Sync] Same genesis, chain forked. Peer is ahead (%d > %d). Reorging...\n",
                       peerHeight, ourHeight);
 
-        // g_scratchBlock2 already has peer's genesis from the download above
-        // Full reset: wipe everything and adopt peer's genesis
-        g_chain.resetState();
-        g_chain.chain[0] = g_scratchBlock2;
-        g_chain.chainLen = 1;
-
-        // Rebuild genesis state: founder gets initial allocation
-        NodeID founder = g_scratchBlock2.header.validator;
-        g_chain.setBalance(founder, GENESIS_PER_NODE);
-        g_chain.staking.totalSupply = GENESIS_PER_NODE;
-        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        g_chain.setBalance(founder, GENESIS_PER_NODE - stakeAmt);
-        g_chain.staking.addGenesisValidator(founder, stakeAmt);
-
-        // Add ourselves and known peers as genesis nodes
-        if (!(g_selfId == founder))
-            g_chain.addGenesisNode(g_selfId);
+        g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
+        // Also add any known peers as genesis nodes
         for (int i = 0; i < g_net.peerCount; i++) {
-            if (g_net.peers[i].active && !(g_net.peers[i].nodeId == founder))
+            NodeID founder = g_scratchBlock2.header.validator;
+            if (g_net.peers[i].active && !(g_net.peers[i].nodeId == founder)
+                && !(g_net.peers[i].nodeId == g_selfId))
                 g_chain.addGenesisNode(g_net.peers[i].nodeId);
         }
         g_consensus.updateRole(g_chain.staking);
@@ -1252,17 +1228,7 @@ void trySync() {
 
     Serial0.println("[Sync] Peer's genesis wins. Adopting peer's chain...");
 
-    if (!g_chain.replaceGenesis(g_scratchBlock2)) {
-        Serial0.println("[Sync] Failed to replace genesis!");
-        return;
-    }
-
-    g_chain.setBalance(g_scratchBlock2.header.validator, GENESIS_PER_NODE);
-    g_chain.staking.totalSupply = GENESIS_PER_NODE;
-    uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-    g_chain.setBalance(g_scratchBlock2.header.validator, GENESIS_PER_NODE - stakeAmt);
-    g_chain.staking.addGenesisValidator(g_scratchBlock2.header.validator, stakeAmt);
-    g_chain.addGenesisNode(g_selfId);
+    g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
     g_consensus.updateRole(g_chain.staking);
 
     Serial0.printf("[Sync] Genesis adopted. Height: %d, downloading blocks...\n",

@@ -44,25 +44,54 @@ public:
         gen.header.index = 0;
         gen.header.timestamp = 0;
         gen.header.prevHash = ZERO_HASH;
+        gen.header.validator = founder;
         gen.header.txCount = 0;
         gen.header.slot = 0;
         gen.header.epoch = 0;
         gen.header.reward = 0;
-        gen.header.stateRoot = ZERO_HASH;
-        gen.computeHash();
-        chainLen = 1;
 
+        // Set up founder account + staking BEFORE computing stateRoot
         setBalance(founder, GENESIS_PER_NODE);
         staking.totalSupply = GENESIS_PER_NODE;
 
         uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        uint32_t bal = getBalance(founder);
-        bal -= stakeAmt;
-        setBalance(founder, bal);
+        setBalance(founder, GENESIS_PER_NODE - stakeAmt);
         staking.addGenesisValidator(founder, stakeAmt);
 
-        Serial0.printf("[Genesis] Founder %s: %u liquid, %u staked\n",
-                      founder.toShortStr().c_str(), getBalance(founder), stakeAmt);
+        // Genesis block commits to the founder's initial state
+        gen.header.stateRoot = computeStateRoot();
+        gen.computeHash();
+        chainLen = 1;
+
+        Serial0.printf("[Genesis] Founder %s: %u liquid, %u staked, root=%s\n",
+                      founder.toShortStr().c_str(), getBalance(founder), stakeAmt,
+                      gen.header.stateRoot.toShort().c_str());
+    }
+
+    // Adopt a peer's genesis block: wipe local state and rebuild from
+    // the genesis founder. Called when a joining node discovers an
+    // existing network. selfId is added as a genesis node if different
+    // from founder.
+    void adoptGenesis(const Block& genesis, const NodeID& selfId) {
+        resetState();
+        chain[0] = genesis;
+        chainLen = 1;
+
+        NodeID founder = genesis.header.validator;
+        setBalance(founder, GENESIS_PER_NODE);
+        staking.totalSupply = GENESIS_PER_NODE;
+
+        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
+        setBalance(founder, GENESIS_PER_NODE - stakeAmt);
+        staking.addGenesisValidator(founder, stakeAmt);
+
+        if (!(selfId == founder)) {
+            addGenesisNode(selfId);
+        }
+
+        Serial0.printf("[Genesis] Adopted genesis from %s, hash=%s\n",
+                      founder.toShortStr().c_str(),
+                      genesis.blockHash.toShort().c_str());
     }
 
     void addGenesisNode(const NodeID& node) {
@@ -71,9 +100,7 @@ public:
         staking.totalSupply += GENESIS_PER_NODE;
 
         uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        uint32_t bal = getBalance(node);
-        bal -= stakeAmt;
-        setBalance(node, bal);
+        setBalance(node, GENESIS_PER_NODE - stakeAmt);
         staking.addGenesisValidator(node, stakeAmt);
         staking.runElection(0);
 
@@ -632,6 +659,14 @@ public:
         chain[chainLen] = blk;
         blockFees = 0;
 
+        // Snapshot account + staking state before re-execution so we can
+        // roll back cleanly if stateRoot verification fails.
+        AccountBalance accountSnap[MAX_ACCOUNTS];
+        memcpy(accountSnap, accounts, sizeof(accounts));
+        uint8_t accountCountSnap = accountCount;
+        uint32_t totalSupplySnap = staking.totalSupply;
+        uint32_t totalStakedSnap = staking.totalStaked;
+
         Serial0.printf("[Validate] Re-executing #%d from %s (%d txns, slot %d)\n",
                       blk.header.index,
                       blk.header.validator.toShortStr().c_str(),
@@ -662,10 +697,13 @@ public:
             Serial0.printf("  Expected: %s\n", blk.header.stateRoot.toShort().c_str());
             Serial0.printf("  Computed: %s\n", computedRoot.toShort().c_str());
 
-            // Roll back: undo balance/fee changes by re-loading from chain state
-            // We already wrote to chain[chainLen] but haven't incremented chainLen,
-            // so we need to undo the account state changes from executeTx + reward
-            // For safety, we don't increment chainLen so the block is effectively discarded
+            // Roll back all state changes from re-execution so the node
+            // remains in a clean state for subsequent validation attempts.
+            memcpy(accounts, accountSnap, sizeof(accounts));
+            accountCount = accountCountSnap;
+            staking.totalSupply = totalSupplySnap;
+            staking.totalStaked = totalStakedSnap;
+            blockFees = 0;
             return 8;  // stateRoot mismatch
         }
 
@@ -713,24 +751,6 @@ public:
     }
 
 
-    bool replaceGenesis(const Block& peerGenesis) {
-        if (peerGenesis.header.index != 0) return false;
-
-        if (chainLen > 0 && chain[0].blockHash == peerGenesis.blockHash)
-            return true;
-
-        Serial0.println("[Sync] Replacing genesis with peer's genesis");
-
-        resetState();
-
-        chain[0] = peerGenesis;
-        chainLen = 1;
-
-        Serial0.printf("[Sync] New genesis hash: %s\n",
-                      peerGenesis.blockHash.toShort().c_str());
-        return true;
-    }
-
     // Reset all state back to empty (preserving nothing)
     void resetState() {
         memset(accounts, 0, sizeof(accounts));
@@ -751,25 +771,9 @@ public:
         if (chainLen == 0) return false;
 
         Block genesis = chain[0];  // save genesis block
-
         Serial0.println("[Reorg] Resetting to genesis for chain reorg");
 
-        resetState();
-
-        chain[0] = genesis;
-        chainLen = 1;
-
-        // Rebuild genesis state from the founder
-        setBalance(genesis.header.validator, GENESIS_PER_NODE);
-        staking.totalSupply = GENESIS_PER_NODE;
-        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        setBalance(genesis.header.validator, GENESIS_PER_NODE - stakeAmt);
-        staking.addGenesisValidator(genesis.header.validator, stakeAmt);
-
-        // Re-add ourselves if we're not the genesis founder
-        if (!(selfId == genesis.header.validator)) {
-            addGenesisNode(selfId);
-        }
+        adoptGenesis(genesis, selfId);
 
         Serial0.printf("[Reorg] Reset to genesis hash=%s, height=%d\n",
                       genesis.blockHash.toShort().c_str(), height());
@@ -785,11 +789,30 @@ public:
             Hash256 ch = contracts[i].stateHash();
             memcpy(buf + off, ch.bytes, HASH_SIZE); off += HASH_SIZE;
         }
-        for (int i = 0; i < accountCount && off < 460; i++) {
-            if (!accounts[i].used) continue;
-            memcpy(buf + off, accounts[i].owner.id, 6); off += 6;
-            memcpy(buf + off, &accounts[i].balance, 4); off += 4;
+
+        // Sort account indices by NodeID so state root is deterministic
+        // regardless of the order accounts were created in the array.
+        // (Different nodes may discover peers in different order.)
+        uint8_t idx[MAX_ACCOUNTS];
+        uint8_t n = 0;
+        for (int i = 0; i < accountCount; i++) {
+            if (accounts[i].used) idx[n++] = i;
         }
+        for (uint8_t a = 1; a < n; a++) {
+            uint8_t key = idx[a];
+            int b = a - 1;
+            while (b >= 0 && memcmp(accounts[idx[b]].owner.id,
+                                    accounts[key].owner.id, 6) > 0) {
+                idx[b + 1] = idx[b];
+                b--;
+            }
+            idx[b + 1] = key;
+        }
+        for (uint8_t i = 0; i < n && off < 460; i++) {
+            memcpy(buf + off, accounts[idx[i]].owner.id, 6); off += 6;
+            memcpy(buf + off, &accounts[idx[i]].balance, 4); off += 4;
+        }
+
         memcpy(buf + off, &staking.totalStaked, 4); off += 4;
         memcpy(buf + off, &staking.activeCount, 1); off += 1;
         return (off > 0) ? sha256(buf, off) : ZERO_HASH;
