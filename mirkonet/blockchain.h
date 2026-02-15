@@ -930,15 +930,6 @@ public:
             Serial0.printf("\n==== EPOCH TRANSITION: %d -> %d ====\n",
                           newEpoch - 1, newEpoch);
 
-            // Check for validator downtime before election
-            for (int v = 0; v < staking.activeCount; v++) {
-                StakeInfo* si = staking.findStake(staking.activeSet[v]);
-                if (si && si->missedBlocks >= DOWNTIME_THRESHOLD) {
-                    staking.checkDowntime(staking.activeSet[v],
-                                         blk.header.index, newEpoch);
-                }
-            }
-
             staking.runElection(newEpoch);
             if (g_blockchainLedCb) g_blockchainLedCb(10, 0);  // epoch election
         }
