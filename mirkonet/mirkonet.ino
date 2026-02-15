@@ -499,11 +499,13 @@ void setup() {
     g_led.init();
     g_led.bootSequence();
     g_led.setState(LED_NO_WIFI);
+    g_led.flashInitLed();
     Serial0.println("[Init]   LED OK");
 
 
     Serial0.println("[Init] Step 2/6: WiFi...");
     bool wifiOk = g_wifi.begin();
+    g_led.flashInitWifi();
     Serial0.printf("[Init]   WiFi result: STA %s\n", wifiOk ? "CONNECTED" : "not connected");
     Serial0.printf("[Init]   AP always active: %s\n", g_wifi.apName.c_str());
     Serial0.printf("[Init]   Portal: http://%s\n", WiFi.softAPIP().toString().c_str());
@@ -514,6 +516,7 @@ void setup() {
     uint8_t mac[6];
     WiFi.macAddress(mac);
     memcpy(g_selfId.id, mac, 6);
+    g_led.flashInitIdentity();
     Serial0.println("[Init]   Node ID: " + g_selfId.toString());
     Serial0.println("[Init]   Short:   " + g_selfId.toShortStr());
     if (g_selfId.isZero()) {
@@ -527,6 +530,7 @@ void setup() {
 
     Serial0.println("[Init] Step 4/6: Blockchain genesis...");
     g_chain.initGenesis(g_selfId);
+    g_led.flashInitGenesis();
     Serial0.printf("[Init]   Chain height: %d\n", g_chain.height());
     Serial0.printf("[Init]   Accounts: %d\n", g_chain.accountCount);
     Serial0.printf("[Init]   Heap after genesis: %d\n", ESP.getFreeHeap());
@@ -535,12 +539,14 @@ void setup() {
     Serial0.println("[Init] Step 5/6: Consensus...");
     g_consensus.init(g_selfId);
     g_consensus.updateRole(g_chain.staking);
+    g_led.flashInitConsensus();
     Serial0.printf("[Init]   Role: %s\n", roleName(g_consensus.selfRole));
     Serial0.printf("[Init]   Validators: %d\n", g_chain.staking.activeCount);
 
 
     Serial0.println("[Init] Step 6/6: P2P Network...");
     g_net.init(g_selfId);
+    g_led.flashInitNetwork();
     Serial0.printf("[Init]   UDP ports: %d, %d | TCP: %d\n",
                   UDP_DISCOVERY_PORT, UDP_GOSSIP_PORT, TCP_SYNC_PORT);
     Serial0.printf("[Init]   Heap after net: %d\n", ESP.getFreeHeap());
@@ -557,14 +563,33 @@ void setup() {
     // Wire up blockchain LED callback for validation-stage feedback
     g_blockchainLedCb = [](uint8_t event, uint8_t param) {
         switch (event) {
-            case 0: g_led.flashStateVerified(); break;  // Validation pass
-            case 1: g_led.flashReject(); break;         // Rejection
-            case 2: g_led.flashForTxType(param); break; // TX success -> flash tx type color
-            case 3: g_led.flashTxFail(); break;         // TX failure -> red
+            case 0:  g_led.flashStateVerified(); break;  // State root verified
+            case 1:  // Rejection - color by rejection code
+                switch (param) {
+                    case 1: g_led.flashRejectIndex(); break;
+                    case 2: g_led.flashRejectHash();  break;
+                    case 3: g_led.flashRejectHash();  break;
+                    case 5: g_led.flashRejectPoS();   break;
+                    case 6: g_led.flashRejectSlot();  break;
+                    case 7: g_led.flashRejectCode();  break;
+                    case 8: g_led.flashRejectState(); break;
+                    default: g_led.flashReject();     break;
+                }
+                break;
+            case 2:  g_led.flashForTxType(param); break; // TX success
+            case 3:  g_led.flashTxFail(); break;         // TX failure
+            case 4:  g_led.flashValidateIndex(); break;  // Index check OK
+            case 5:  g_led.flashValidateHash(); break;   // Hash check OK
+            case 6:  g_led.flashValidatePoS(); break;    // PoS auth OK
+            case 7:  g_led.flashValidateSlot(); break;   // Slot check OK
+            case 8:  g_led.flashSync(); break;           // Re-executing block
+            case 9:  g_led.flashPrune(); break;          // Chain pruning
+            case 10: g_led.flashElection(); break;       // Epoch election
         }
     };
     Serial0.println("[Init] Blockchain LED callback registered");
 
+    g_led.flashInitComplete();
     Serial0.println("\n======== INIT COMPLETE ========");
     Serial0.printf("  Node:       %s\n", g_selfId.toString().c_str());
     Serial0.printf("  Role:       %s\n", roleName(g_consensus.selfRole));
@@ -600,8 +625,10 @@ void loop() {
         g_wifi.staConnected = staUp;
         if (staUp) {
             Serial0.println("[WiFi] STA connected! IP: " + WiFi.localIP().toString());
+            g_led.flashWifiConnect();
         } else {
             Serial0.println("[WiFi] STA disconnected!");
+            g_led.flashWifiDisconnect();
         }
     }
 
@@ -611,12 +638,14 @@ void loop() {
             g_lastDiscovery = now;
             g_net.sendDiscovery(g_chain.height(), g_consensus.selfRole,
                                 g_chain.currentEpoch());
+            g_led.flashDiscoverySend();
         }
 
         if (g_consensus.selfRole == ROLE_VALIDATOR &&
             now - g_lastHeartbeat >= HEARTBEAT_INTERVAL) {
             g_lastHeartbeat = now;
             g_net.sendHeartbeat(g_chain.height(), g_consensus.getCurrentSlot());
+            g_led.flashGossipHeartbeat();
         }
 
         auto disc = g_net.recvDiscovery();
@@ -654,6 +683,7 @@ void loop() {
             if (ssid.length() > 0) {
                 Serial0.println("[WiFi] Attempting STA reconnect...");
                 WiFi.reconnect();
+                g_led.flashWifiReconnect();
             }
         }
     }
@@ -675,6 +705,7 @@ void loop() {
                       g_chain.checkpointCount,
                       roleName(g_consensus.selfRole),
                       inGrace ? " [GRACE]" : "");
+        g_led.flashAlive();
     }
 
     delay(10);
@@ -724,6 +755,7 @@ void handleDiscovery(const P2PNetwork::RecvMsg& msg) {
         }
         if (genesisCount < GENESIS_NODES) {
             g_chain.addGenesisNode(msg.sender);
+            g_led.flashGenesisNode();
         }
     }
 
@@ -746,10 +778,10 @@ void handleDiscovery(const P2PNetwork::RecvMsg& msg) {
                     Serial0.println("[Discovery] Peer has lower genesis hash — adopting");
                     g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
                     g_consensus.updateRole(g_chain.staking);
-                    g_led.flashGenesisOk();
+                    g_led.flashGenesisAdopt();
                 } else {
                     Serial0.println("[Discovery] Our genesis hash is lower — we win, peer should adopt");
-                    g_led.flashValidation();
+                    g_led.flashGenesisWin();
                 }
             } else {
                 Serial0.println("[Discovery] Same genesis! Already in sync.");
@@ -770,6 +802,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
             PeerInfo* p = g_net.findPeer(msg.sender);
             if (p) p->chainHeight = h;
         }
+        g_led.flashGossipHeartbeat();
         break;
     }
 
@@ -779,7 +812,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
         if (g_chain.addToMempool(tx)) {
             Serial0.println("[Gossip] TX from " + msg.sender.toShortStr() +
                            " type=" + String((int)tx.type));
-            g_led.flashForTxType((uint8_t)tx.type);
+            g_led.flashGossipTx();
         }
         break;
     }
@@ -809,6 +842,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
 
         prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
 
+        g_led.flashGossipBlock();
         uint8_t result = g_chain.applyNetworkBlock(g_scratchBlock);
         if (result == 0) {
             Serial0.printf("[Gossip] Block #%d APPLIED! height=%d\n",
@@ -823,8 +857,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
                 Serial0.println();
             }
 
-            // Flash LED for each tx type in the accepted block
-            // For CALL txns, flash the dominant opcode category instead
+            // Flash LED for each tx: type-specific color, CALL uses dominant opcode color
             for (int i = 0; i < g_scratchBlock.header.txCount; i++) {
                 if (g_scratchBlock.txns[i].type == TxType::CALL) {
                     g_led.flashForOpcode(g_chain.vm.dominantOpcode());
@@ -834,7 +867,6 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
             }
 
             // Re-gossip CONTRACT_INFO for any deployed contracts in this block
-            // so the info propagates to nodes that may not have heard the original
             for (int i = 0; i < g_scratchBlock.header.txCount; i++) {
                 if (g_scratchBlock.txns[i].type == TxType::DEPLOY) {
                     Contract* c = g_chain.findContract(g_scratchBlock.txns[i].data);
@@ -848,7 +880,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
             g_consensus.updateRole(g_chain.staking);
             g_consensus.lastProducedSlot = g_scratchBlock.header.slot;
 
-            // LED feedback: green for accepted block, purple for epoch
+            // Final LED: green accepted, purple for epoch boundary
             if (g_chain.height() % EPOCH_LENGTH == 0)
                 g_led.flashEpoch();
             else
@@ -863,7 +895,17 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
                           g_scratchBlock.header.index,
                           result < 9 ? reasons[result] : "unknown",
                           result);
-            g_led.flashReject();
+            // Color-coded rejection by reason
+            switch (result) {
+                case 1: g_led.flashRejectIndex(); break;
+                case 2: g_led.flashRejectHash();  break;
+                case 3: g_led.flashRejectHash();  break;
+                case 5: g_led.flashRejectPoS();   break;
+                case 6: g_led.flashRejectSlot();  break;
+                case 7: g_led.flashRejectCode();  break;
+                case 8: g_led.flashRejectState(); break;
+                default: g_led.flashReject();     break;
+            }
         }
         break;
     }
@@ -895,6 +937,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
                     Serial0.printf("[Gossip] Learned contract '%s' hosted by %s (%dB, hash=%s)\n",
                                   name, host.toShortStr().c_str(), codeLen,
                                   codeHash.toShort().c_str());
+                    g_led.flashGossipContract();
                 }
             } else {
                 // Update host info if needed (in case host migrated)
@@ -917,6 +960,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
             if (blockIdx >= g_chain.height()) {
                 Serial0.printf("[Gossip] Block #%d announced (we're at %d, will sync)\n",
                               blockIdx, g_chain.height());
+                g_led.flashGossipBlockAnn();
             }
         }
         break;
@@ -943,16 +987,19 @@ void handleTCPRequest(WiFiClient& client) {
         memcpy(&requestedIdx, buf+7, 4);
 
         Serial0.printf("[TCP] Block #%d requested\n", requestedIdx);
+        g_led.flashTcpBlockReq();
 
         if (requestedIdx >= g_chain.chainOffset &&
             requestedIdx < g_chain.chainOffset + g_chain.chainLen) {
             uint32_t arrayIdx = requestedIdx - g_chain.chainOffset;
             g_net.sendBlock(client, g_chain.chain[arrayIdx]);
             Serial0.printf("[TCP] Sent block #%d\n", requestedIdx);
+            g_led.flashTcpSent();
         } else {
             Serial0.printf("[TCP] Block #%d not in memory [%d..%d]\n",
                           requestedIdx, g_chain.chainOffset,
                           g_chain.chainOffset + g_chain.chainLen - 1);
+            g_led.flashTxFail();
         }
     }
     else if (type == MsgType::CODE_REQ && len >= 23) {
@@ -961,6 +1008,7 @@ void handleTCPRequest(WiFiClient& client) {
         memcpy(name, buf+7, 16); name[15] = '\0';
 
         Serial0.printf("[TCP] Code request for '%s'\n", name);
+        g_led.flashTcpCodeReq();
 
         Contract* c = g_chain.findContract(name);
         if (c && c->hasCode && c->codeLen > 0) {
@@ -973,8 +1021,10 @@ void handleTCPRequest(WiFiClient& client) {
             client.write(resp, off);
             client.flush();
             Serial0.printf("[TCP] Sent '%s' bytecode (%d bytes)\n", name, c->codeLen);
+            g_led.flashTcpSent();
         } else {
             Serial0.printf("[TCP] Don't have bytecode for '%s'\n", name);
+            g_led.flashCodeFail();
         }
     }
     client.stop();
@@ -994,6 +1044,7 @@ void fetchCodeForContract(Contract* c) {
             Serial0.printf("[Code] Loaded '%s' from deploy cache (%dB%s)\n",
                           c->name, cached->codeLen,
                           weAreHost ? "" : ", temporary");
+            g_led.flashCodeCache();
             return;
         }
     }
@@ -1002,6 +1053,8 @@ void fetchCodeForContract(Contract* c) {
     if (weAreHost) {
         Serial0.printf("[Code] We host '%s' but lost bytecode, asking peers...\n", c->name);
     }
+
+    g_led.flashCodeFetch();
 
     // Try the designated host peer first
     IPAddress hostIP;
@@ -1025,9 +1078,11 @@ void fetchCodeForContract(Contract* c) {
                 Serial0.printf("[Code] Fetched '%s' from host (%dB, hash verified, %s)\n",
                               c->name, codeLen,
                               weAreHost ? "permanent" : "temporary for validation");
+                g_led.flashCodeOk();
                 return;
             } else {
                 Serial0.printf("[Code] HASH MISMATCH for '%s' from host!\n", c->name);
+                g_led.flashCodeHashBad();
             }
         }
     }
@@ -1044,12 +1099,14 @@ void fetchCodeForContract(Contract* c) {
                 Serial0.printf("[Code] Fetched '%s' from peer %s (%dB, hash verified, %s)\n",
                               c->name, g_net.peers[i].nodeId.toShortStr().c_str(), codeLen,
                               weAreHost ? "permanent" : "temporary for validation");
+                g_led.flashCodeOk();
                 return;
             }
         }
     }
 
     Serial0.printf("[Code] Could not fetch '%s' from any peer\n", c->name);
+    g_led.flashCodeFail();
 }
 
 void prefetchCodeForTxns(const Transaction* txns, uint8_t count) {
@@ -1079,8 +1136,11 @@ void checkBlockProduction() {
                 // Another validator was supposed to produce; if we see the slot
                 // pass without a block, increment their missed counter
                 StakeInfo* si = g_chain.staking.findStake(expected);
-                if (si && si->used && !si->jailed)
+                if (si && si->used && !si->jailed) {
                     si->missedBlocks++;
+                    if (si->missedBlocks >= DOWNTIME_THRESHOLD)
+                        g_led.flashDowntime();
+                }
             }
         }
         return;
@@ -1098,6 +1158,7 @@ void checkBlockProduction() {
 
     g_consensus.lastProducedSlot = slot;
 
+    g_led.flashProducing();
     Serial0.printf("\n=== PRODUCING BLOCK (slot %d, epoch %d, txns=%d%s) ===\n",
                   slot, g_chain.currentEpoch(), g_chain.mempoolSize,
                   hasTx ? "" : " heartbeat");
@@ -1173,9 +1234,11 @@ void trySync() {
                   best->nodeId.toShortStr().c_str(), peerHeight, ourHeight);
 
     g_led.setState(LED_SYNCING);
+    g_led.flashSyncStart();
 
     if (!g_net.requestBlock(best->ip, ourHeight, g_scratchBlock)) {
         Serial0.println("[Sync] Failed to download block, will retry");
+        g_led.flashSyncFail();
         return;
     }
 
@@ -1186,21 +1249,23 @@ void trySync() {
         Serial0.printf("[Sync] Block #%d applied. Height: %d\n",
                       ourHeight, g_chain.height());
         g_consensus.updateRole(g_chain.staking);
-        g_led.flashValidation();
+        g_led.flashSyncApplied();
         return;
     }
 
     if (result != 2) {
         Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", ourHeight, result);
-        g_led.flashReject();
+        g_led.flashSyncReject();
         return;
     }
 
 
     Serial0.println("[Sync] Chain divergence! Downloading peer's genesis...");
+    g_led.flashSyncDiverge();
 
     if (!g_net.requestBlock(best->ip, 0, g_scratchBlock2)) {
         Serial0.println("[Sync] Can't download peer's genesis, will retry");
+        g_led.flashSyncFail();
         return;
     }
 
@@ -1223,6 +1288,7 @@ void trySync() {
         Serial0.printf("[Sync] Same genesis, chain forked. Peer is ahead (%d > %d). Reorging...\n",
                       peerHeight, ourHeight);
 
+        g_led.flashSyncReorg();
         g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
         // Also add any known peers as genesis nodes
         for (int i = 0; i < g_net.peerCount; i++) {
@@ -1254,21 +1320,23 @@ void trySync() {
                 Serial0.printf("[Sync] Reorg applied #%d, height=%d\n",
                               idx, g_chain.height());
                 g_consensus.updateRole(g_chain.staking);
-                g_led.flashValidation();
+                g_led.flashSyncApplied();
             } else {
                 Serial0.printf("[Sync] Reorg: block #%d failed validation\n", idx);
-                g_led.flashReject();
+                g_led.flashSyncReject();
                 break;
             }
         }
 
         Serial0.printf("[Sync] Reorg done. Height: %d (peer: %d)\n",
                       g_chain.height(), peerHeight);
+        g_led.flashSyncDone();
         return;
     }
 
 
     Serial0.println("[Sync] Peer's genesis wins. Adopting peer's chain...");
+    g_led.flashSyncAdopt();
 
     g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
     g_consensus.updateRole(g_chain.staking);
@@ -1291,16 +1359,17 @@ void trySync() {
         if (r == 0) {
             Serial0.printf("[Sync] Applied #%d, height=%d\n", idx, g_chain.height());
             g_consensus.updateRole(g_chain.staking);
-            g_led.flashValidation();
+            g_led.flashSyncApplied();
         } else {
             Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", idx, r);
-            g_led.flashReject();
+            g_led.flashSyncReject();
             break;
         }
     }
 
     Serial0.printf("[Sync] Resync done. Height: %d (peer: %d)\n",
                   g_chain.height(), peerHeight);
+    g_led.flashSyncDone();
 }
 
 
