@@ -79,10 +79,13 @@ public:
     void runElection(uint32_t epoch) {
         currentEpoch = epoch;
 
+        // Unjail validators whose jail period has expired
+        unjailExpired(epoch);
+
         int indices[MAX_CANDIDATES];
         int n = 0;
         for (int i = 0; i < stakeCount; i++) {
-            if (stakes[i].used && stakes[i].isCandidate)
+            if (stakes[i].used && stakes[i].isCandidate && !stakes[i].jailed)
                 indices[n++] = i;
         }
 
@@ -178,6 +181,86 @@ public:
         return activeSet[slot % activeCount] == who;
     }
 
+    // --- Slashing ---
+
+    // Slash a validator for misbehavior. Returns amount slashed.
+    // slashPct: percentage of stake to slash (e.g., 10 = 10%)
+    uint32_t slash(const NodeID& who, uint32_t slashPct, uint32_t currentEpochNum) {
+        StakeInfo* s = findStake(who);
+        if (!s || !s->used) return 0;
+
+        uint32_t slashAmt = (s->stakedAmount * slashPct) / 100;
+        if (slashAmt == 0) slashAmt = 1; // slash at least 1 token
+
+        if (slashAmt > s->stakedAmount) slashAmt = s->stakedAmount;
+        s->stakedAmount -= slashAmt;
+        totalStaked -= slashAmt;
+        // Slashed tokens are burned (removed from supply)
+        totalSupply -= slashAmt;
+
+        s->slashCount++;
+        s->jailed = true;
+        s->jailUntilEpoch = currentEpochNum + SLASH_JAIL_EPOCHS;
+
+        // If remaining stake is below minimum, remove candidate status
+        if (s->stakedAmount < MIN_STAKE) {
+            s->isCandidate = false;
+        }
+
+        Serial.printf("[Slash] %s slashed %u tokens (%u%%), jailed until epoch %u (count: %u)\n",
+                      who.toShortStr().c_str(), slashAmt, slashPct,
+                      s->jailUntilEpoch, s->slashCount);
+        return slashAmt;
+    }
+
+    // Slash for double-signing (producing two blocks in the same slot)
+    uint32_t slashDoubleSig(const NodeID& who, uint32_t currentEpochNum) {
+        Serial.printf("[Slash] Double-sign detected from %s!\n",
+                      who.toShortStr().c_str());
+        return slash(who, SLASH_DOUBLE_SIGN_PCT, currentEpochNum);
+    }
+
+    // Check and slash for downtime (missing too many blocks)
+    uint32_t checkDowntime(const NodeID& who, uint32_t currentBlock, uint32_t currentEpochNum) {
+        StakeInfo* s = findStake(who);
+        if (!s || !s->used || s->jailed) return 0;
+
+        s->missedBlocks++;
+        if (s->missedBlocks >= DOWNTIME_THRESHOLD) {
+            Serial.printf("[Slash] Downtime detected: %s missed %u blocks\n",
+                          who.toShortStr().c_str(), s->missedBlocks);
+            s->missedBlocks = 0;
+            return slash(who, SLASH_DOWNTIME_PCT, currentEpochNum);
+        }
+        return 0;
+    }
+
+    // Record that a validator produced a block (resets their missed counter)
+    void recordBlockProduced(const NodeID& who, uint32_t blockIndex) {
+        StakeInfo* s = findStake(who);
+        if (s && s->used) {
+            s->missedBlocks = 0;
+            s->lastProducedBlock = blockIndex;
+        }
+    }
+
+    // Unjail validators whose jail period has expired
+    void unjailExpired(uint32_t currentEpochNum) {
+        for (int i = 0; i < stakeCount; i++) {
+            if (stakes[i].used && stakes[i].jailed &&
+                currentEpochNum >= stakes[i].jailUntilEpoch) {
+                stakes[i].jailed = false;
+                Serial.printf("[Slash] %s unjailed at epoch %u\n",
+                              stakes[i].staker.toShortStr().c_str(), currentEpochNum);
+            }
+        }
+    }
+
+    bool isJailed(const NodeID& who) const {
+        const StakeInfo* s = findStake(who);
+        return s && s->jailed;
+    }
+
     void printStatus() const {
         Serial.println("\n══════ PoS Status ══════");
         Serial.printf("Epoch: %u | Total staked: %u | Supply: %u\n",
@@ -195,12 +278,13 @@ public:
         for (int i = 0; i < stakeCount; i++) {
             if (!stakes[i].used) continue;
             bool active = isActiveValidator(stakes[i].staker);
-            Serial.printf("  %s | stake=%u unstaking=%u %s%s\n",
+            Serial.printf("  %s | stake=%u unstaking=%u %s%s%s\n",
                           stakes[i].staker.toString().c_str(),
                           stakes[i].stakedAmount,
                           stakes[i].unstakingAmount,
                           stakes[i].isCandidate ? "CANDIDATE " : "",
-                          active ? "★ACTIVE" : "");
+                          active ? "★ACTIVE " : "",
+                          stakes[i].jailed ? "JAILED" : "");
         }
         Serial.println("=======================\n");
     }

@@ -366,6 +366,15 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
             Serial0.printf("[Gossip] Block #%d APPLIED! height=%d\n",
                           g_scratchBlock.header.index, g_chain.height());
 
+            // Print structured logs from VM execution
+            for (uint8_t l = 0; l < g_chain.vm.logCount(); l++) {
+                const MVMLog& log = g_chain.vm.log(l);
+                Serial0.printf("    Log[%d] data=%u topics=%d", l, log.data, log.topicCount);
+                for (int t = 0; t < log.topicCount; t++)
+                    Serial0.printf(" t%d=%u", t, log.topics[t]);
+                Serial0.println();
+            }
+
             // Re-gossip CONTRACT_INFO for any deployed contracts in this block
             // so the info propagates to nodes that may not have heard the original
             for (int i = 0; i < g_scratchBlock.header.txCount; i++) {
@@ -601,7 +610,21 @@ void checkBlockProduction() {
 
     if (millis() - g_consensus.genesisTime < BOOT_GRACE_PERIOD) return;
 
-    if (!g_consensus.shouldProduce(g_chain.staking)) return;
+    if (!g_consensus.shouldProduce(g_chain.staking)) {
+        // Track missed blocks for the expected producer (downtime detection)
+        uint32_t currentSlot = g_consensus.getCurrentSlot();
+        if (g_chain.staking.activeCount > 1) {
+            NodeID expected = g_chain.staking.getSlotProducer(currentSlot);
+            if (expected != g_selfId) {
+                // Another validator was supposed to produce; if we see the slot
+                // pass without a block, increment their missed counter
+                StakeInfo* si = g_chain.staking.findStake(expected);
+                if (si && si->used && !si->jailed)
+                    si->missedBlocks++;
+            }
+        }
+        return;
+    }
 
     uint32_t slot = g_consensus.getCurrentSlot();
 
@@ -634,6 +657,15 @@ void checkBlockProduction() {
     prefetchCodeForTxns(txns, txCount);
 
     if (g_chain.createBlock(g_selfId, slot, txns, txCount)) {
+        // Print structured logs
+        for (uint8_t l = 0; l < g_chain.vm.logCount(); l++) {
+            const MVMLog& log = g_chain.vm.log(l);
+            Serial0.printf("    Log[%d] data=%u topics=%d", l, log.data, log.topicCount);
+            for (int t = 0; t < log.topicCount; t++)
+                Serial0.printf(" t%d=%u", t, log.topics[t]);
+            Serial0.println();
+        }
+
         g_net.broadcastFullBlock(g_chain.lastBlock());
 
         // Gossip CONTRACT_INFO for any newly deployed contracts in this block

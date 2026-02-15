@@ -299,9 +299,27 @@ public:
             ctx.argCount = tx.argCount;
             memcpy(ctx.args, tx.args, tx.argCount * 4);
             ctx.callValue = tx.value;
+            ctx.blockNumber = height();
+            ctx.blockTimestamp = millis();
+            ctx.origin = tx.sender;
 
-            // Apply gasLimit from tx (Ethereum style)
-            uint32_t savedGasMax = MVM_MAX_GAS;
+            // Set up contract resolver for cross-contract calls
+            g_contractResolver = [](const char* name) -> Contract* {
+                // This lambda is stateless; it relies on the global g_chain
+                // being accessible. Since blockchain.h defines it inline,
+                // we use extern to access the global instance.
+                extern BlockchainState g_chain;
+                if (!name) return nullptr;
+                // Special index-based lookup: "\x01N" returns contract at index N
+                if (name[0] == '\x01') {
+                    int idx = atoi(name + 1);
+                    if (idx >= 0 && idx < g_chain.contractCount)
+                        return &g_chain.contracts[idx];
+                    return nullptr;
+                }
+                return g_chain.findContract(name);
+            };
+
             MVMStatus st = vm.execute(*c, ctx);
             r.vmStatus = st;
             r.gasUsed = vm.gasUsed();
@@ -461,6 +479,10 @@ public:
         uint32_t valBal = getBalance(validator);
         setBalance(validator, valBal + BLOCK_REWARD + blockFees);
         staking.totalSupply += BLOCK_REWARD;
+
+        // Record block production for slashing/downtime tracking
+        staking.recordBlockProduced(validator, logicalIdx);
+
         blk.header.stateRoot = computeStateRoot();
         blk.computeHash();
         chainLen++;
@@ -638,6 +660,9 @@ public:
         Serial0.printf("[Validate] StateRoot VERIFIED: %s\n",
                       computedRoot.toShort().c_str());
 
+        // Record block production for slashing/downtime tracking
+        staking.recordBlockProduced(blk.header.validator, blk.header.index);
+
         // Discard temporarily fetched bytecode from non-host contracts.
         // This is the key resource optimization: only the host node
         // permanently stores the bytecode, other nodes fetch it
@@ -656,6 +681,16 @@ public:
             uint32_t newEpoch = height() / EPOCH_LENGTH;
             Serial0.printf("\n==== EPOCH TRANSITION: %d -> %d ====\n",
                           newEpoch - 1, newEpoch);
+
+            // Check for validator downtime before election
+            for (int v = 0; v < staking.activeCount; v++) {
+                StakeInfo* si = staking.findStake(staking.activeSet[v]);
+                if (si && si->missedBlocks >= DOWNTIME_THRESHOLD) {
+                    staking.checkDowntime(staking.activeSet[v],
+                                         blk.header.index, newEpoch);
+                }
+            }
+
             staking.runElection(newEpoch);
         }
 

@@ -48,6 +48,32 @@
 #define MVM_MAX_CODE        256
 #define MVM_MAX_EVENTS      8
 #define MVM_MAX_ARGS        8
+#define MVM_MAX_MEMORY      64
+#define MVM_MAX_LOG_TOPICS  4
+#define MVM_MAX_LOGS        8
+#define MVM_MAX_CALL_DEPTH  4
+
+// --- Per-opcode gas costs (Ethereum-inspired, scaled for ESP32) ---
+#define GAS_BASE            2    // HALT, POP, PUSH, DUP, SWAP, etc
+#define GAS_VERYLOW         3    // ADD, SUB, NOT, LT, GT, EQ, ISZERO
+#define GAS_LOW             5    // MUL, DIV, MOD
+#define GAS_MID             8    // AND, OR, XOR, SHL, SHR, BYTE, SIGNEXTEND
+#define GAS_JUMP            8    // JUMP, JUMPI
+#define GAS_SLOAD          50    // Storage read
+#define GAS_SSTORE        100    // Storage write
+#define GAS_SHA3           30    // SHA3/Keccak
+#define GAS_LOG            50    // LOG base
+#define GAS_LOG_TOPIC      25    // per indexed topic
+#define GAS_CALL          100    // contract-to-contract call base
+#define GAS_MEMORY          3    // MLOAD/MSTORE
+#define GAS_BALANCE        20    // BALANCE, CALLER, context lookups
+#define GAS_EMIT            5    // legacy EMIT (kept for compat)
+
+// --- Slashing ---
+#define SLASH_DOUBLE_SIGN_PCT   10   // 10% slash for double-signing
+#define SLASH_DOWNTIME_PCT       2   // 2% slash for prolonged downtime
+#define DOWNTIME_THRESHOLD      10   // blocks missed before downtime slash
+#define SLASH_JAIL_EPOCHS        2   // epochs a slashed validator is jailed
 
 #define MAX_CONTRACTS       8
 #define MAX_ACCOUNTS        24

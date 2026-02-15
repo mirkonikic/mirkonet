@@ -28,7 +28,20 @@
 #define OP5_BALANCE   0x16
 #define OP5_CALLVALUE 0x17
 #define OP5_SHA3      0x18
-// 0x19-0x1F reserved
+#define OP5_LOG       0x19  // LOG with topics: mod=topic count (0-4)
+#define OP5_EXT       0x1A  // Extended ops: mod selects sub-op
+#define OP5_XCALL     0x1B  // Contract calls: mod=0 CALL, mod=1 DELEGATECALL
+// 0x1C-0x1F reserved
+
+// EXT sub-ops (mod field of OP5_EXT)
+#define EXT_ISZERO    0   // ( a -- a==0 )
+#define EXT_MLOAD     1   // ( addr -- value )
+#define EXT_MSTORE    2   // ( addr value -- )
+#define EXT_ADDRESS   3   // ( -- contract_addr_hash )
+#define EXT_ORIGIN    4   // ( -- origin_hash )
+#define EXT_NUMBER    5   // ( -- block_number )
+#define EXT_TIMESTAMP 6   // ( -- timestamp )
+#define EXT_GASLEFT   7   // ( -- remaining_gas )
 
 #define ENCODE(op, mod)  (uint8_t)(((op) << 3) | ((mod) & 0x07))
 #define DECODE_OP(b)     ((b) >> 3)
@@ -66,23 +79,44 @@
 #define BYTE_BALANCE   ENCODE(OP5_BALANCE, 0)
 #define BYTE_CALLVALUE ENCODE(OP5_CALLVALUE, 0)
 #define BYTE_SHA3      ENCODE(OP5_SHA3, 0)
+#define BYTE_LOG(n)    ENCODE(OP5_LOG, (n))   // LOG0-LOG4
+#define BYTE_ISZERO    ENCODE(OP5_EXT, EXT_ISZERO)
+#define BYTE_MLOAD     ENCODE(OP5_EXT, EXT_MLOAD)
+#define BYTE_MSTORE    ENCODE(OP5_EXT, EXT_MSTORE)
+#define BYTE_ADDRESS   ENCODE(OP5_EXT, EXT_ADDRESS)
+#define BYTE_ORIGIN    ENCODE(OP5_EXT, EXT_ORIGIN)
+#define BYTE_NUMBER    ENCODE(OP5_EXT, EXT_NUMBER)
+#define BYTE_TIMESTAMP ENCODE(OP5_EXT, EXT_TIMESTAMP)
+#define BYTE_GASLEFT   ENCODE(OP5_EXT, EXT_GASLEFT)
+#define BYTE_CALL      ENCODE(OP5_XCALL, 0)
+#define BYTE_DCALL     ENCODE(OP5_XCALL, 1)   // DELEGATECALL
 
 enum MVMStatus : uint8_t {
     VM_RUNNING=0, VM_HALTED=1, VM_REVERTED=2,
     VM_ERR_STACK_OVER=3, VM_ERR_STACK_UNDER=4, VM_ERR_OUT_OF_GAS=5,
     VM_ERR_BAD_JUMP=6, VM_ERR_CODE_BOUNDS=7, VM_ERR_DIV_ZERO=8,
     VM_ERR_STORAGE_FULL=9, VM_ERR_BAD_ARG=10,
+    VM_ERR_CALL_DEPTH=11, VM_ERR_CALL_FAIL=12, VM_ERR_MEM_BOUNDS=13,
 };
 
 inline const char* statusName(MVMStatus s) {
     const char* names[] = {"RUNNING","OK","REVERTED","STACK_OVER","STACK_UNDER",
-        "OUT_OF_GAS","BAD_JUMP","CODE_BOUNDS","DIV_ZERO","STORAGE_FULL","BAD_ARG"};
-    return (s <= VM_ERR_BAD_ARG) ? names[s] : "UNKNOWN";
+        "OUT_OF_GAS","BAD_JUMP","CODE_BOUNDS","DIV_ZERO","STORAGE_FULL","BAD_ARG",
+        "CALL_DEPTH","CALL_FAIL","MEM_BOUNDS"};
+    return (s <= VM_ERR_MEM_BOUNDS) ? names[s] : "UNKNOWN";
 }
 inline bool isTerminal(MVMStatus s) { return s != VM_RUNNING; }
 
 struct MVMEvent { uint32_t value; uint32_t gasUsed; };
 struct StorageSlot { uint32_t key; uint32_t value; bool used; };
+
+// Structured log entry with indexed topics (Ethereum-style)
+struct MVMLog {
+    uint32_t topics[MVM_MAX_LOG_TOPICS];
+    uint8_t  topicCount;
+    uint32_t data;        // log data value
+    uint32_t gasSnapshot; // gas used at time of log
+};
 
 
 struct Contract {
@@ -189,25 +223,38 @@ struct MVMContext {
     uint32_t args[MVM_MAX_ARGS];
     uint8_t  argCount;
     uint32_t callValue;
+    uint32_t blockNumber;
+    uint32_t blockTimestamp;
+    NodeID   origin;       // tx.sender (original sender, doesn't change in subcalls)
 };
+
+// Forward declaration: contract resolver for cross-contract calls.
+// Implemented by BlockchainState; set before execution.
+typedef Contract* (*ContractResolver)(const char* name);
+static ContractResolver g_contractResolver = nullptr;
 
 
 class MirkoVM {
 public:
-    MVMStatus execute(Contract& contract, const MVMContext& ctx) {
+    MVMStatus execute(Contract& contract, const MVMContext& ctx,
+                      uint8_t callDepth = 0) {
         _pc = 0; _sp = 0; _gas = MVM_MAX_GAS; _gasUsed = 0;
-        _status = VM_RUNNING; _eventCount = 0;
+        _status = VM_RUNNING; _eventCount = 0; _logCount = 0;
+        memset(_memory, 0, sizeof(_memory));
         memcpy(_snap, contract.storage, sizeof(contract.storage));
         uint32_t balSnap = contract.balance;
 
         while (_status == VM_RUNNING) {
-            if (_gas == 0) { _status = VM_ERR_OUT_OF_GAS; break; }
             if (_pc >= contract.codeLen) { _status = VM_ERR_CODE_BOUNDS; break; }
-            _gas--; _gasUsed++;
 
             uint8_t byte = contract.code[_pc];
             uint8_t op  = DECODE_OP(byte);
             uint8_t mod = DECODE_MOD(byte);
+
+            // Per-opcode gas metering
+            uint32_t cost = _gasCost(op, mod);
+            if (_gas < cost) { _status = VM_ERR_OUT_OF_GAS; break; }
+            _gas -= cost; _gasUsed += cost;
 
             switch (op) {
 
@@ -336,11 +383,36 @@ public:
                 _pc++; break;
 
             case OP5_EMIT:
+                // Legacy single-value emit (kept for backward compat)
                 if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
                 if (_eventCount < MVM_MAX_EVENTS)
                     _events[_eventCount++] = { _stack[--_sp], _gasUsed };
                 else _sp--;
                 _pc++; break;
+
+            case OP5_LOG: {
+                // LOG0-LOG4: pop data, then pop N topics
+                // Stack: [topicN ... topic1 data] -> []
+                uint8_t nTopics = mod;
+                if (nTopics > MVM_MAX_LOG_TOPICS) { _status = VM_ERR_BAD_ARG; break; }
+                if (_sp < (uint8_t)(1 + nTopics)) { _status = VM_ERR_STACK_UNDER; break; }
+
+                if (_logCount < MVM_MAX_LOGS) {
+                    MVMLog& log = _logs[_logCount++];
+                    log.data = _stack[--_sp];
+                    log.topicCount = nTopics;
+                    for (int t = 0; t < nTopics; t++)
+                        log.topics[t] = _stack[--_sp];
+                    log.gasSnapshot = _gasUsed;
+                } else {
+                    _sp -= (1 + nTopics);  // still consume stack
+                }
+
+                // Also emit as legacy event for backward compat
+                if (_eventCount < MVM_MAX_EVENTS)
+                    _events[_eventCount++] = { _logs[_logCount-1].data, _gasUsed };
+                _pc++; break;
+            }
 
             case OP5_ARG:
                 if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
@@ -379,6 +451,169 @@ public:
                 }
                 _pc++; break;
 
+            case OP5_EXT:
+                switch (mod) {
+                case EXT_ISZERO:
+                    if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
+                    _stack[_sp-1] = (_stack[_sp-1] == 0) ? 1 : 0;
+                    _pc++; break;
+                case EXT_MLOAD:
+                    if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
+                    { uint32_t maddr = _stack[_sp-1];
+                      if (maddr >= MVM_MAX_MEMORY) { _status = VM_ERR_MEM_BOUNDS; break; }
+                      _stack[_sp-1] = _memory[maddr]; }
+                    _pc++; break;
+                case EXT_MSTORE:
+                    if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                    { uint32_t mval = _stack[--_sp]; uint32_t maddr = _stack[--_sp];
+                      if (maddr >= MVM_MAX_MEMORY) { _status = VM_ERR_MEM_BOUNDS; break; }
+                      _memory[maddr] = mval; }
+                    _pc++; break;
+                case EXT_ADDRESS:
+                    if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                    _stack[_sp++] = ((uint32_t)contract.addr.bytes[0] << 24) |
+                                    ((uint32_t)contract.addr.bytes[1] << 16) |
+                                    ((uint32_t)contract.addr.bytes[2] << 8) |
+                                     contract.addr.bytes[3];
+                    _pc++; break;
+                case EXT_ORIGIN:
+                    if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                    _stack[_sp++] = ctx.origin.hash32();
+                    _pc++; break;
+                case EXT_NUMBER:
+                    if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                    _stack[_sp++] = ctx.blockNumber;
+                    _pc++; break;
+                case EXT_TIMESTAMP:
+                    if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                    _stack[_sp++] = ctx.blockTimestamp;
+                    _pc++; break;
+                case EXT_GASLEFT:
+                    if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                    _stack[_sp++] = _gas;
+                    _pc++; break;
+                default:
+                    _status = VM_ERR_CODE_BOUNDS; break;
+                }
+                break;
+
+            case OP5_XCALL: {
+                // CALL: stack = [argCount arg0..argN nameHash gasStipend]
+                // DELEGATECALL: same but runs target code with caller's storage
+                if (callDepth >= MVM_MAX_CALL_DEPTH) {
+                    _status = VM_ERR_CALL_DEPTH; break;
+                }
+                if (_sp < 3) { _status = VM_ERR_STACK_UNDER; break; }
+
+                uint32_t gasStipend = _stack[--_sp];
+                uint32_t nameHash   = _stack[--_sp];
+                uint32_t nArgs      = _stack[--_sp];
+                if (nArgs > MVM_MAX_ARGS) nArgs = MVM_MAX_ARGS;
+                if (_sp < nArgs) { _status = VM_ERR_STACK_UNDER; break; }
+
+                // Pop arguments
+                MVMContext subCtx;
+                subCtx.argCount = nArgs;
+                for (uint32_t a = 0; a < nArgs; a++)
+                    subCtx.args[a] = _stack[--_sp];
+                subCtx.callValue = 0;
+                subCtx.blockNumber = ctx.blockNumber;
+                subCtx.blockTimestamp = ctx.blockTimestamp;
+                subCtx.origin = ctx.origin;
+
+                // Find target contract by nameHash.
+                // Convention: nameHash == ContractAddr as uint32 (first 4 bytes of sha256(name))
+                // The assembler provides a CALLNAME pseudo-op that pushes this.
+                // The resolver finds by scanning all contracts for matching addr.
+                Contract* target = nullptr;
+                if (g_contractResolver) {
+                    ContractAddr searchAddr;
+                    searchAddr.bytes[0] = (nameHash >> 24) & 0xFF;
+                    searchAddr.bytes[1] = (nameHash >> 16) & 0xFF;
+                    searchAddr.bytes[2] = (nameHash >> 8) & 0xFF;
+                    searchAddr.bytes[3] = nameHash & 0xFF;
+
+                    // Resolver with NULL returns contracts by index (0, 1, 2...)
+                    // Resolver with a name returns that specific contract
+                    for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
+                        char idxBuf[16];
+                        snprintf(idxBuf, sizeof(idxBuf), "\x01%d", ci);
+                        Contract* c = g_contractResolver(idxBuf);
+                        if (!c) break;
+                        if (c->addr == searchAddr && c->active && c->hasCode) {
+                            target = c;
+                            break;
+                        }
+                    }
+                }
+
+                if (!target || !target->hasCode) {
+                    // Push 0 (failure) onto stack
+                    if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                    _stack[_sp++] = 0;
+                    _pc++; break;
+                }
+
+                // Cap gas stipend
+                if (gasStipend == 0 || gasStipend > _gas)
+                    gasStipend = _gas;
+
+                if (mod == 0) {
+                    // CALL: execute target code with target storage, caller = this contract
+                    subCtx.caller = NodeID(); // use contract's deployer as "caller from contract"
+                    memcpy(subCtx.caller.id, contract.addr.bytes, 4);
+                } else {
+                    // DELEGATECALL: execute target code with OUR storage, keep our caller
+                    subCtx.caller = ctx.caller;
+                }
+
+                // Execute subcall
+                MirkoVM subVm;
+                MVMStatus subStatus;
+                if (mod == 1) {
+                    // DELEGATECALL: run target's code against our contract's storage
+                    // Save target code, run it against current contract
+                    uint8_t savedCode[MVM_MAX_CODE];
+                    uint16_t savedLen = contract.codeLen;
+                    memcpy(savedCode, contract.code, contract.codeLen);
+                    memcpy(contract.code, target->code, target->codeLen);
+                    contract.codeLen = target->codeLen;
+
+                    subStatus = subVm.execute(contract, subCtx, callDepth + 1);
+
+                    // Restore our code
+                    memcpy(contract.code, savedCode, savedLen);
+                    contract.codeLen = savedLen;
+                } else {
+                    // CALL: run target's code against target's storage
+                    subStatus = subVm.execute(*target, subCtx, callDepth + 1);
+                }
+
+                // Deduct sub-call gas from our gas
+                uint32_t subGas = subVm.gasUsed();
+                if (subGas > _gas) { _status = VM_ERR_OUT_OF_GAS; break; }
+                _gas -= subGas;
+                _gasUsed += subGas;
+
+                // Propagate events/logs from subcall
+                for (uint8_t e = 0; e < subVm.eventCount() && _eventCount < MVM_MAX_EVENTS; e++)
+                    _events[_eventCount++] = subVm.event(e);
+                for (uint8_t l = 0; l < subVm.logCount() && _logCount < MVM_MAX_LOGS; l++)
+                    _logs[_logCount++] = subVm.log(l);
+
+                // Push success (1) or failure (0)
+                if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                _stack[_sp++] = (subStatus == VM_HALTED) ? 1 : 0;
+
+                // If subcall returned a value, push it too
+                if (subStatus == VM_HALTED && subVm.stackTop() != 0) {
+                    if (_sp >= MVM_MAX_STACK) { _status = VM_ERR_STACK_OVER; break; }
+                    _stack[_sp++] = subVm.stackTop();
+                }
+
+                _pc++; break;
+            }
+
             default:
                 _status = VM_ERR_CODE_BOUNDS; break;
             }
@@ -396,6 +631,8 @@ public:
     uint32_t stackTop() const { return _sp > 0 ? _stack[_sp-1] : 0; }
     uint8_t eventCount() const { return _eventCount; }
     const MVMEvent& event(uint8_t i) const { return _events[i]; }
+    uint8_t logCount() const { return _logCount; }
+    const MVMLog& log(uint8_t i) const { return _logs[i]; }
 
 private:
     uint32_t    _stack[MVM_MAX_STACK];
@@ -404,5 +641,46 @@ private:
     MVMStatus   _status;
     MVMEvent    _events[MVM_MAX_EVENTS];
     uint8_t     _eventCount;
+    MVMLog      _logs[MVM_MAX_LOGS];
+    uint8_t     _logCount;
     StorageSlot _snap[MVM_MAX_STORAGE];
+    uint32_t    _memory[MVM_MAX_MEMORY];
+
+    // Per-opcode gas cost lookup
+    static uint32_t _gasCost(uint8_t op, uint8_t mod) {
+        switch (op) {
+            case OP5_HALT:      return GAS_BASE;
+            case OP5_PUSH:      return GAS_BASE;
+            case OP5_POP:       return GAS_BASE;
+            case OP5_DUP:       return GAS_BASE;
+            case OP5_SWAP:      return GAS_BASE;
+            case OP5_ADD:       return GAS_VERYLOW;
+            case OP5_SUB:       return GAS_VERYLOW;
+            case OP5_MUL:       return GAS_LOW;
+            case OP5_DIV:       return GAS_LOW;
+            case OP5_MOD:       return GAS_LOW;
+            case OP5_AND:       return GAS_MID;
+            case OP5_OR:        return GAS_MID;
+            case OP5_XOR:       return GAS_MID;
+            case OP5_SHL:       return GAS_MID;
+            case OP5_SHR:       return GAS_MID;
+            case OP5_CMP:       return GAS_VERYLOW;
+            case OP5_NOT:       return GAS_VERYLOW;
+            case OP5_JMP:       return GAS_JUMP;
+            case OP5_SLOAD:     return GAS_SLOAD;
+            case OP5_SSTORE:    return GAS_SSTORE;
+            case OP5_EMIT:      return GAS_EMIT;
+            case OP5_ARG:       return GAS_BASE;
+            case OP5_BALANCE:   return GAS_BALANCE;
+            case OP5_CALLVALUE: return GAS_BASE;
+            case OP5_SHA3:      return GAS_SHA3;
+            case OP5_LOG:       return GAS_LOG + mod * GAS_LOG_TOPIC;
+            case OP5_EXT:
+                if (mod == EXT_MLOAD || mod == EXT_MSTORE) return GAS_MEMORY;
+                if (mod == EXT_ISZERO) return GAS_VERYLOW;
+                return GAS_BALANCE; // ADDRESS, ORIGIN, NUMBER, TIMESTAMP, GASLEFT
+            case OP5_XCALL:     return GAS_CALL;
+            default:            return GAS_BASE;
+        }
+    }
 };
