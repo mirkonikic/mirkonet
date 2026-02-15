@@ -31,17 +31,23 @@ public:
         return elapsed < SLOT_TOLERANCE;
     }
 
-    bool shouldProduce(const StakingEngine& staking, bool bootstrap) const {
+    bool shouldProduce(const StakingEngine& staking, bool bootstrap,
+                       uint8_t peerCount = 0) const {
         uint32_t slot = getCurrentSlot();
         if (slot == lastProducedSlot) return false;
         if (!isWithinSlotWindow()) return false;
 
         // During bootstrap (epoch 0, only virtual founder in active set)
-        // any node can produce.  Use hash-based turn to avoid collisions.
+        // use hash-based turn to avoid two nodes producing the same block.
         if (bootstrap) {
-            // Simple round-robin: hash(slot) determines which peer goes.
-            // With only ~1-5 nodes on a local mesh the collision rate is
-            // acceptably low, and a duplicate block is simply rejected.
+            // Derive a per-node priority from selfId XOR slot.  Only the
+            // node whose priority puts it in the first bucket produces.
+            // This staggers production so nodes don't fork at the same height.
+            uint8_t h = selfId.id[0] ^ selfId.id[1] ^ selfId.id[2]
+                      ^ (uint8_t)(slot & 0xFF);
+            // With peerCount nodes, each node gets ~1/N of the slots.
+            // peerCount==0 means we're alone, always produce.
+            if (peerCount > 0 && (h % (peerCount + 1)) != 0) return false;
             return true;
         }
 

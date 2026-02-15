@@ -1183,31 +1183,37 @@ void prefetchCodeForTxns(const Transaction* txns, uint8_t count) {
 // During bootstrap, auto-submit faucet + stake so the node can
 // start producing blocks on the real PoS schedule.
 static bool g_bootstrapDone = false;
+static bool g_bootstrapFaucetPending = false;
+static bool g_bootstrapStakePending  = false;
 
 void autoBootstrap() {
     if (g_bootstrapDone) return;
     if (g_chain.getBalance(g_selfId) >= GENESIS_PER_NODE) {
+        g_bootstrapFaucetPending = false;  // faucet was mined
         // Already have tokens — may just need to stake
         const StakeInfo* si = g_chain.staking.findStake(g_selfId);
         if (si && si->stakedAmount >= MIN_STAKE) {
             g_bootstrapDone = true;
+            g_bootstrapStakePending = false;
+            Serial0.println("[Bootstrap] Done — faucet + stake confirmed");
             return;
         }
-        // Submit stake tx
+        if (g_bootstrapStakePending) return;  // already submitted, wait for mining
+        // Submit stake tx (once)
         Transaction tx = buildTx(TxType::STAKE);
         tx.value = GENESIS_PER_NODE / 2;
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_bootstrapStakePending = true;
         Serial0.printf("[Bootstrap] Auto-stake %u submitted\n", tx.value);
         return;
     }
-    // Request faucet first
-    if (g_chain.getBalance(g_selfId) == 0) {
-        // Give ourselves GENESIS_PER_NODE directly during bootstrap
-        // (like the old addGenesisNode but through a proper faucet tx)
+    // Request faucet first (once)
+    if (g_chain.getBalance(g_selfId) == 0 && !g_bootstrapFaucetPending) {
         Transaction tx = buildTx(TxType::FAUCET);
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_bootstrapFaucetPending = true;
         Serial0.println("[Bootstrap] Auto-faucet submitted");
     }
 }
@@ -1221,7 +1227,7 @@ void checkBlockProduction() {
     // During bootstrap, auto-submit faucet + stake
     if (bootstrap) autoBootstrap();
 
-    if (!g_consensus.shouldProduce(g_chain.staking, bootstrap)) {
+    if (!g_consensus.shouldProduce(g_chain.staking, bootstrap, g_net.peerCount)) {
         // Track missed blocks for the expected producer (downtime detection)
         uint32_t currentSlot = g_consensus.getCurrentSlot();
         if (!bootstrap && g_chain.staking.activeCount > 1) {
