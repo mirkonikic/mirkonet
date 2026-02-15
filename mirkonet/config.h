@@ -68,12 +68,20 @@
 #define GAS_MEMORY          3    // MLOAD/MSTORE
 #define GAS_BALANCE        20    // BALANCE, CALLER, context lookups
 #define GAS_EMIT            5    // legacy EMIT (kept for compat)
+#define GAS_GPIO           80    // GPIO read/write (privileged hardware access)
 
 // --- Slashing ---
 #define SLASH_DOUBLE_SIGN_PCT   10   // 10% slash for double-signing
 #define SLASH_DOWNTIME_PCT       2   // 2% slash for prolonged downtime
 #define DOWNTIME_THRESHOLD      10   // blocks missed before downtime slash
 #define SLASH_JAIL_EPOCHS        2   // epochs a slashed validator is jailed
+
+// --- GPIO allowlist (safe pins for smart contract control) ---
+// ESP32: avoid 0,1,3,6-11 (boot/flash/uart). Safe GPIOs for relay/LED control.
+#define GPIO_MAX_ALLOWED    8
+static const uint8_t GPIO_ALLOWED_PINS[GPIO_MAX_ALLOWED] = {
+    4, 5, 12, 13, 14, 15, 16, 17
+};
 
 #define MAX_CONTRACTS       8
 #define MAX_ACCOUNTS        24
