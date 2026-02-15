@@ -312,6 +312,51 @@ public:
         return sz;
     }
 
+    // Request a checkpoint + state snapshot from a peer (for joining a
+    // pruned chain).  Returns raw serialized state in outBuf/outLen.
+    bool requestCheckpoint(IPAddress peerIP, uint8_t* outBuf, uint16_t& outLen) {
+        WiFiClient client;
+        Serial0.printf("[Sync] Requesting checkpoint from %s...\n",
+                      peerIP.toString().c_str());
+
+        if (!client.connect(peerIP, TCP_SYNC_PORT, 3000)) {
+            Serial0.println("[Sync] TCP connect failed for checkpoint");
+            return false;
+        }
+
+        uint8_t req[8]; size_t off = 0;
+        req[off++] = (uint8_t)MsgType::CHECKPOINT_REQ;
+        memcpy(req+off, selfId.id, 6); off += 6;
+        client.write(req, off);
+        client.flush();
+
+        int len = 0;
+        uint32_t start = millis();
+        while (millis() - start < 5000) {
+            int avail = client.available();
+            if (avail > 0) {
+                int chunk = client.read(outBuf + len, 1400 - len);
+                len += chunk;
+                start = millis();
+            }
+            if (len > 20 && !client.available()) break;
+            delay(5);
+        }
+        client.stop();
+
+        if (len < 10 || (MsgType)outBuf[0] != MsgType::CHECKPOINT_RESP) {
+            Serial0.printf("[Sync] Bad checkpoint response (%d bytes)\n", len);
+            return false;
+        }
+
+        // Skip header (1 byte type + 6 bytes sender)
+        outLen = len - 7;
+        memmove(outBuf, outBuf + 7, outLen);
+
+        Serial0.printf("[Sync] Got checkpoint snapshot (%d bytes)\n", outLen);
+        return true;
+    }
+
     bool requestCode(IPAddress hostIP, const char* name,
                      uint8_t* outCode, uint16_t& outLen) {
         WiFiClient client;

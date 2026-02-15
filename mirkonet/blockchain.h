@@ -49,19 +49,35 @@ public:
 
     uint32_t       blockFees = 0;
 
-    void initGenesis(const NodeID& founder) {
+    // Hardcoded genesis — every node on the network produces the
+    // exact same block with the exact same hash.  No node-specific
+    // data goes into the genesis; the "founder" is a virtual identity
+    // defined in config.h (GENESIS_FOUNDER_BYTES).
+    //
+    // The virtual founder receives GENESIS_PER_NODE tokens with half
+    // staked, giving the chain an initial validator that can never
+    // actually produce blocks (it has no real hardware).  During
+    // bootstrap (epoch 0) any node is allowed to produce, giving
+    // real nodes time to faucet + stake and take over.
+    static NodeID genesisFounder() {
+        static const uint8_t id[] = GENESIS_FOUNDER_BYTES;
+        NodeID f; memcpy(f.id, id, 6);
+        return f;
+    }
+
+    void initGenesis() {
         Block& gen = chain[0];
         memset(&gen, 0, sizeof(Block));
         gen.header.index = 0;
         gen.header.timestamp = 0;
         gen.header.prevHash = ZERO_HASH;
-        gen.header.validator = founder;
+        gen.header.validator = genesisFounder();
         gen.header.txCount = 0;
         gen.header.slot = 0;
         gen.header.epoch = 0;
         gen.header.reward = 0;
 
-        // Set up founder account + staking BEFORE computing stateRoot
+        NodeID founder = genesisFounder();
         setBalance(founder, GENESIS_PER_NODE);
         staking.totalSupply = GENESIS_PER_NODE;
 
@@ -69,54 +85,187 @@ public:
         setBalance(founder, GENESIS_PER_NODE - stakeAmt);
         staking.addGenesisValidator(founder, stakeAmt);
 
-        // Genesis block commits to the founder's initial state
         gen.header.stateRoot = computeStateRoot();
         gen.computeHash();
         chainLen = 1;
 
-        Serial0.printf("[Genesis] Founder %s: %u liquid, %u staked, root=%s\n",
+        Serial0.printf("[Genesis] Hardcoded founder %s: %u liquid, %u staked, hash=%s\n",
                       founder.toShortStr().c_str(), getBalance(founder), stakeAmt,
                       gen.header.stateRoot.toShort().c_str());
     }
 
-    // Adopt a peer's genesis block: wipe local state and rebuild from
-    // the genesis founder. Called when a joining node discovers an
-    // existing network. selfId is added as a genesis node if different
-    // from founder.
-    void adoptGenesis(const Block& genesis, const NodeID& selfId) {
-        resetState();
-        chain[0] = genesis;
-        chainLen = 1;
-
-        NodeID founder = genesis.header.validator;
-        setBalance(founder, GENESIS_PER_NODE);
-        staking.totalSupply = GENESIS_PER_NODE;
-
-        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        setBalance(founder, GENESIS_PER_NODE - stakeAmt);
-        staking.addGenesisValidator(founder, stakeAmt);
-
-        if (!(selfId == founder)) {
-            addGenesisNode(selfId);
+    // Check whether the network is still in bootstrap mode (epoch 0,
+    // no real validators have been elected yet).  During bootstrap any
+    // online node is allowed to produce blocks so that the first faucet
+    // and stake transactions can be mined.
+    bool isBootstrap() const {
+        if (height() >= BOOTSTRAP_HEIGHT) return false;
+        // If the only validator is the virtual founder, we're bootstrapping
+        NodeID founder = genesisFounder();
+        for (int i = 0; i < staking.activeCount; i++) {
+            if (staking.activeSet[i] != founder) return false;  // a real node is active
         }
-
-        Serial0.printf("[Genesis] Adopted genesis from %s, hash=%s\n",
-                      founder.toShortStr().c_str(),
-                      genesis.blockHash.toShort().c_str());
+        return true;
     }
 
-    void addGenesisNode(const NodeID& node) {
-        if (getBalance(node) > 0) return;
-        setBalance(node, GENESIS_PER_NODE);
-        staking.totalSupply += GENESIS_PER_NODE;
+    // Initialize chain state from a peer's checkpoint snapshot.
+    // Used by new nodes that join after blocks have been pruned.
+    bool initFromCheckpoint(const Checkpoint& ckpt,
+                            const AccountBalance* accts, uint8_t acctCount,
+                            const StakeInfo* stakeSnap, uint8_t stakeCnt,
+                            uint8_t activeValidatorCnt, const NodeID* activeSetSnap,
+                            uint32_t supply, uint32_t staked) {
+        resetState();
+        // Restore genesis (needed for chain identity)
+        initGenesis();
 
-        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        setBalance(node, GENESIS_PER_NODE - stakeAmt);
-        staking.addGenesisValidator(node, stakeAmt);
-        staking.runElection(0);
+        // Overwrite accounts with snapshot
+        accountCount = acctCount;
+        memcpy(accounts, accts, acctCount * sizeof(AccountBalance));
 
-        Serial0.printf("[Genesis] Node %s: %u liquid, %u staked\n",
-                      node.toShortStr().c_str(), getBalance(node), stakeAmt);
+        // Overwrite staking state
+        staking.stakeCount = stakeCnt;
+        memcpy(staking.stakes, stakeSnap, stakeCnt * sizeof(StakeInfo));
+        staking.activeCount = activeValidatorCnt;
+        memcpy(staking.activeSet, activeSetSnap, activeValidatorCnt * sizeof(NodeID));
+        staking.totalSupply = supply;
+        staking.totalStaked = staked;
+
+        // Record the checkpoint
+        if (checkpointCount < MAX_CHECKPOINTS)
+            checkpoints[checkpointCount++] = ckpt;
+
+        // Chain starts from the block AFTER the checkpoint
+        chainOffset = ckpt.toBlock + 1;
+        chainLen = 0;
+
+        Serial0.printf("[Checkpoint] Initialized from checkpoint [%d..%d], "
+                      "offset=%d, accounts=%d, validators=%d\n",
+                      ckpt.fromBlock, ckpt.toBlock,
+                      chainOffset, accountCount, staking.activeCount);
+        return true;
+    }
+
+    // Serialize current state into a buffer for checkpoint sync.
+    // Returns bytes written.  Format:
+    //   [checkpoint (fixed)] [accountCount 1B] [accounts...]
+    //   [stakeCount 1B] [stakes...] [activeCount 1B] [activeSet...]
+    //   [totalSupply 4B] [totalStaked 4B]
+    uint16_t serializeState(uint8_t* buf, uint16_t maxLen) const {
+        uint16_t off = 0;
+        if (checkpointCount == 0) return 0;
+        const Checkpoint& ckpt = checkpoints[checkpointCount - 1];
+
+        // Checkpoint struct (fixed layout)
+        memcpy(buf + off, &ckpt.fromBlock, 4); off += 4;
+        memcpy(buf + off, &ckpt.toBlock, 4); off += 4;
+        memcpy(buf + off, ckpt.lastBlockHash.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf + off, ckpt.stateRoot.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf + off, ckpt.chainMerkle.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf + off, ckpt.prevCheckpoint.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf + off, &ckpt.timestamp, 4); off += 4;
+
+        // Accounts
+        buf[off++] = accountCount;
+        for (int i = 0; i < accountCount; i++) {
+            if (off + 15 > maxLen) break;
+            memcpy(buf + off, accounts[i].owner.id, 6); off += 6;
+            memcpy(buf + off, &accounts[i].balance, 4); off += 4;
+            memcpy(buf + off, &accounts[i].nonce, 4); off += 4;
+            buf[off++] = accounts[i].used ? 1 : 0;
+        }
+
+        // Staking
+        buf[off++] = staking.stakeCount;
+        for (int i = 0; i < staking.stakeCount; i++) {
+            if (off + 30 > maxLen) break;
+            const StakeInfo& s = staking.stakes[i];
+            memcpy(buf + off, s.staker.id, 6); off += 6;
+            memcpy(buf + off, &s.stakedAmount, 4); off += 4;
+            memcpy(buf + off, &s.unstakingAmount, 4); off += 4;
+            memcpy(buf + off, &s.unstakeBlock, 4); off += 4;
+            buf[off++] = s.isCandidate ? 1 : 0;
+            buf[off++] = s.used ? 1 : 0;
+            buf[off++] = s.jailed ? 1 : 0;
+            memcpy(buf + off, &s.jailUntilEpoch, 4); off += 4;
+        }
+
+        // Active set
+        buf[off++] = staking.activeCount;
+        for (int i = 0; i < staking.activeCount; i++) {
+            memcpy(buf + off, staking.activeSet[i].id, 6); off += 6;
+        }
+
+        // Totals
+        memcpy(buf + off, &staking.totalSupply, 4); off += 4;
+        memcpy(buf + off, &staking.totalStaked, 4); off += 4;
+
+        return off;
+    }
+
+    // Deserialize state from a checkpoint sync buffer.
+    bool deserializeCheckpointState(const uint8_t* buf, uint16_t len) {
+        uint16_t off = 0;
+        Checkpoint ckpt;
+        memset(&ckpt, 0, sizeof(ckpt));
+        ckpt.used = true;
+
+        if (off + 4 > len) return false;
+        memcpy(&ckpt.fromBlock, buf + off, 4); off += 4;
+        memcpy(&ckpt.toBlock, buf + off, 4); off += 4;
+        memcpy(ckpt.lastBlockHash.bytes, buf + off, HASH_SIZE); off += HASH_SIZE;
+        memcpy(ckpt.stateRoot.bytes, buf + off, HASH_SIZE); off += HASH_SIZE;
+        memcpy(ckpt.chainMerkle.bytes, buf + off, HASH_SIZE); off += HASH_SIZE;
+        memcpy(ckpt.prevCheckpoint.bytes, buf + off, HASH_SIZE); off += HASH_SIZE;
+        memcpy(&ckpt.timestamp, buf + off, 4); off += 4;
+
+        // Accounts
+        if (off >= len) return false;
+        uint8_t acctCnt = buf[off++];
+        AccountBalance accts[MAX_ACCOUNTS];
+        memset(accts, 0, sizeof(accts));
+        for (int i = 0; i < acctCnt && i < MAX_ACCOUNTS; i++) {
+            if (off + 15 > len) return false;
+            memcpy(accts[i].owner.id, buf + off, 6); off += 6;
+            memcpy(&accts[i].balance, buf + off, 4); off += 4;
+            memcpy(&accts[i].nonce, buf + off, 4); off += 4;
+            accts[i].used = buf[off++] != 0;
+        }
+
+        // Staking
+        if (off >= len) return false;
+        uint8_t stakeCnt = buf[off++];
+        StakeInfo stakeSnap[MAX_CANDIDATES];
+        memset(stakeSnap, 0, sizeof(stakeSnap));
+        for (int i = 0; i < stakeCnt && i < MAX_CANDIDATES; i++) {
+            if (off + 30 > len) return false;
+            memcpy(stakeSnap[i].staker.id, buf + off, 6); off += 6;
+            memcpy(&stakeSnap[i].stakedAmount, buf + off, 4); off += 4;
+            memcpy(&stakeSnap[i].unstakingAmount, buf + off, 4); off += 4;
+            memcpy(&stakeSnap[i].unstakeBlock, buf + off, 4); off += 4;
+            stakeSnap[i].isCandidate = buf[off++] != 0;
+            stakeSnap[i].used = buf[off++] != 0;
+            stakeSnap[i].jailed = buf[off++] != 0;
+            memcpy(&stakeSnap[i].jailUntilEpoch, buf + off, 4); off += 4;
+        }
+
+        // Active set
+        if (off >= len) return false;
+        uint8_t activeCnt = buf[off++];
+        NodeID activeSnap[MAX_VALIDATORS];
+        for (int i = 0; i < activeCnt && i < MAX_VALIDATORS; i++) {
+            if (off + 6 > len) return false;
+            memcpy(activeSnap[i].id, buf + off, 6); off += 6;
+        }
+
+        // Totals
+        uint32_t supply = 0, staked = 0;
+        if (off + 8 > len) return false;
+        memcpy(&supply, buf + off, 4); off += 4;
+        memcpy(&staked, buf + off, 4); off += 4;
+
+        return initFromCheckpoint(ckpt, accts, acctCnt, stakeSnap, stakeCnt,
+                                  activeCnt, activeSnap, supply, staked);
     }
 
 
@@ -216,11 +365,16 @@ public:
         }
         if (acct->lastFaucet > 0 && millis() - acct->lastFaucet < FAUCET_COOLDOWN)
             return 1;
-        acct->balance += FAUCET_AMOUNT;
+
+        // During bootstrap, give GENESIS_PER_NODE so nodes can stake
+        // immediately.  After bootstrap, give the normal FAUCET_AMOUNT.
+        uint32_t amount = isBootstrap() ? GENESIS_PER_NODE : FAUCET_AMOUNT;
+        acct->balance += amount;
         acct->lastFaucet = millis();
-        staking.totalSupply += FAUCET_AMOUNT;
-        Serial0.printf("[Faucet] %u tokens -> %s (balance: %u)\n",
-                      FAUCET_AMOUNT, requester.toShortStr().c_str(), acct->balance);
+        staking.totalSupply += amount;
+        Serial0.printf("[Faucet] %u tokens -> %s (balance: %u)%s\n",
+                      amount, requester.toShortStr().c_str(), acct->balance,
+                      isBootstrap() ? " [bootstrap]" : "");
         return 0;
     }
 
@@ -636,7 +790,13 @@ public:
         }
         if (g_blockchainLedCb) g_blockchainLedCb(5, 0);  // hash check OK
 
-        if (staking.activeCount > 1) {
+        // During bootstrap (epoch 0, only virtual founder in active set)
+        // any node may produce blocks.  After bootstrap, enforce full PoS.
+        if (isBootstrap()) {
+            Serial0.printf("[Validate] Bootstrap mode: accepting block from %s\n",
+                          blk.header.validator.toShortStr().c_str());
+            if (g_blockchainLedCb) g_blockchainLedCb(6, 0);  // PoS check OK (bootstrap)
+        } else if (staking.activeCount > 1) {
             if (!staking.isActiveValidator(blk.header.validator)) {
                 Serial0.printf("[Validate] REJECT #%d: %s is NOT an active validator\n",
                               blk.header.index,
@@ -806,18 +966,14 @@ public:
         finalizedCount = 0;
     }
 
-    // Reset chain back to genesis, wiping blocks 1+ and rebuilding genesis state
-    // Used for same-genesis fork resolution
-    bool resetToGenesis(const NodeID& selfId) {
-        if (chainLen == 0) return false;
-
-        Block genesis = chain[0];  // save genesis block
+    // Reset chain back to genesis, wiping blocks 1+ and rebuilding genesis state.
+    // Used for same-genesis fork resolution.
+    bool resetToGenesis() {
         Serial0.println("[Reorg] Resetting to genesis for chain reorg");
-
-        adoptGenesis(genesis, selfId);
-
+        resetState();
+        initGenesis();
         Serial0.printf("[Reorg] Reset to genesis hash=%s, height=%d\n",
-                      genesis.blockHash.toShort().c_str(), height());
+                      chain[0].blockHash.toShort().c_str(), height());
         return true;
     }
 

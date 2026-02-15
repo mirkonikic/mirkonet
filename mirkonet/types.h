@@ -327,4 +327,6 @@ enum class MsgType : uint8_t {
     CONTRACT_INFO= 0x0B,
     CODE_REQ     = 0x0C,
     CODE_RESP    = 0x0D,
+    CHECKPOINT_REQ  = 0x0E,
+    CHECKPOINT_RESP = 0x0F,
 };
