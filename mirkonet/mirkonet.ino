@@ -50,6 +50,7 @@ Transaction buildTx(TxType type) {
 // Forward declarations
 bool findNodeByShort(const String& shortId, NodeID& out);
 void deployExamples();
+void deployRelay();
 
 // ==================== Web Dashboard Callbacks ====================
 
@@ -192,6 +193,7 @@ String webHandleCommand(const String& line) {
         out += "  contracts     List contracts\n";
         out += "  storage <n>   Inspect storage\n";
         out += "  example       Deploy demos\n";
+        out += "  relay         Deploy relay contract\n";
         out += "-- Hardware (via smart contracts) --\n";
         out += "  call relay 1 <pin>  Turn ON relay\n";
         out += "  call relay 2 <pin>  Turn OFF relay\n";
@@ -481,6 +483,15 @@ String webHandleCommand(const String& line) {
     }
     else if (cmd == "example") {
         out += "Use the serial console for 'example' (deploys demo contracts)\n";
+    }
+    else if (cmd == "relay") {
+        deployRelay();
+        out += "Relay contract submitted to mempool.\n";
+        out += "After next block, use:\n";
+        out += "  call relay 1 <pin>  Turn ON\n";
+        out += "  call relay 2 <pin>  Turn OFF\n";
+        out += "  call relay 3 <pin>  Toggle\n";
+        out += "  call relay 0 <pin>  Read state\n";
     }
     else {
         out += "Unknown command. Type 'help'.\n";
@@ -1525,6 +1536,7 @@ void handleSerial() {
         Serial0.println("  contracts     List contracts");
         Serial0.println("  storage <n>   Inspect storage");
         Serial0.println("  example       Deploy demos");
+        Serial0.println("  relay         Deploy relay contract");
         Serial0.println("-- Hardware (via smart contracts) --");
         Serial0.println("  call relay 1 <pin>  Turn ON relay");
         Serial0.println("  call relay 2 <pin>  Turn OFF relay");
@@ -1807,6 +1819,9 @@ void handleSerial() {
     }
     else if (cmd == "example") {
         deployExamples();
+    }
+    else if (cmd == "relay") {
+        deployRelay();
     }
     else {
         Serial0.println("Unknown command. Type 'help'.");
@@ -2108,4 +2123,109 @@ t_on:
     Serial0.println("  call relay 2 4    (turn OFF relay on GPIO 4)");
     Serial0.println("  call relay 3 4    (toggle relay on GPIO 4)");
     Serial0.println("  call relay 0 4    (read relay state on GPIO 4)\n");
+}
+
+void deployRelay() {
+    Serial0.println("\n[Relay] Deploying relay contract...\n");
+
+    String src = R"(
+; relay - blockchain-controlled GPIO
+; arg0: 0=status 1=on 2=off 3=toggle
+; arg1: pin number
+ARG 0
+DUP
+PUSH 0
+EQ
+JUMPI @status
+DUP
+PUSH 1
+EQ
+JUMPI @on
+DUP
+PUSH 2
+EQ
+JUMPI @off
+DUP
+PUSH 3
+EQ
+JUMPI @toggle
+REVERT
+status:
+  POP
+  ARG 1
+  SLOAD
+  EMIT
+  HALT
+on:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  PUSH 1
+  GPIOWRITE
+  ARG 1
+  PUSH 1
+  SSTORE
+  PUSH 1
+  EMIT
+  HALT
+off:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  PUSH 0
+  GPIOWRITE
+  ARG 1
+  PUSH 0
+  SSTORE
+  PUSH 0
+  EMIT
+  HALT
+toggle:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  SLOAD
+  PUSH 0
+  EQ
+  JUMPI @t_on
+  ARG 1
+  PUSH 0
+  GPIOWRITE
+  ARG 1
+  PUSH 0
+  SSTORE
+  PUSH 0
+  EMIT
+  HALT
+t_on:
+  ARG 1
+  PUSH 1
+  GPIOWRITE
+  ARG 1
+  PUSH 1
+  SSTORE
+  PUSH 1
+  EMIT
+  HALT
+)";
+
+    auto r = MVMAssembler::assemble(src);
+    if (r.ok) {
+        Serial0.printf("  relay: %d bytes\n", r.len);
+        directDeploy("relay", r.code, r.len);
+        Serial0.println("\n[Relay] Contract submitted to mempool.");
+        Serial0.println("  After next block, use:");
+        Serial0.println("  call relay 1 <pin>  Turn ON");
+        Serial0.println("  call relay 2 <pin>  Turn OFF");
+        Serial0.println("  call relay 3 <pin>  Toggle");
+        Serial0.println("  call relay 0 <pin>  Read state\n");
+    } else {
+        Serial0.println("[Relay] Assembly error: " + r.error);
+    }
 }
