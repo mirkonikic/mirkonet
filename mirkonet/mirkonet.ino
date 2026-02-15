@@ -25,7 +25,6 @@ uint32_t g_lastHeartbeat = 0;
 uint32_t g_lastSlotCheck = 0;
 uint32_t g_lastSync = 0;
 uint32_t g_txNonce = 0;
-bool     g_genesisSynced = false;
 
 static Block g_scratchBlock;
 static Block g_scratchBlock2;
@@ -824,11 +823,11 @@ void handleDiscovery(const P2PNetwork::RecvMsg& msg) {
 
 
 
-    if (!g_genesisSynced && g_chain.height() <= 1 && peerHeight >= 1 &&
-        (millis() - g_consensus.genesisTime) < BOOT_GRACE_PERIOD) {
+    // During boot grace period, compare genesis with every new peer
+    // (not just the first) so all nodes converge to the lowest genesis hash
+    if ((millis() - g_consensus.genesisTime) < BOOT_GRACE_PERIOD) {
 
         if (g_net.requestBlock(msg.senderIP, 0, g_scratchBlock2)) {
-            g_genesisSynced = true;
             if (g_scratchBlock2.blockHash != g_chain.chain[0].blockHash) {
 
                 int cmp = memcmp(g_chain.chain[0].blockHash.bytes,
