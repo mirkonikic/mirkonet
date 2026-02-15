@@ -2,6 +2,7 @@
 #include "types.h"
 #include "mvm.h"
 #include "staking.h"
+#include "code_store.h"
 
 // LED feedback callback for validation stages
 // Set by mirkonet.ino to wire blockchain validation events to NeoPixel LED.
@@ -288,6 +289,7 @@ public:
                     c->host = tx.sender;
                     c->hasCode = true;
                     c->codeHash = entry->codeHash;
+                    CodeStore::save(tx.data, entry->code, entry->codeLen);
                     chargeFee(tx.sender, r.fee);
                     r.success = true;
                     r.message = String("Deployed '") + tx.data + "' hosted locally (" +
