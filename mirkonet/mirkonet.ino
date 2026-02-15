@@ -690,8 +690,13 @@ void handleDiscovery(const P2PNetwork::RecvMsg& msg) {
         memcpy(&epoch, msg.payload + 5, 4);
     }
 
+    int prevCount = g_net.peerCount;
     PeerInfo* p = g_net.addOrUpdatePeer(msg.sender, msg.senderIP, peerHeight, role);
 
+    // Flash teal when a brand-new peer joins
+    if (g_net.peerCount > prevCount) {
+        g_led.flashPeer();
+    }
 
     if (g_chain.height() < 5 && g_chain.getBalance(msg.sender) == 0) {
         int genesisCount = 0;
@@ -1153,6 +1158,7 @@ void trySync() {
         Serial0.printf("[Sync] Block #%d applied. Height: %d\n",
                       ourHeight, g_chain.height());
         g_consensus.updateRole(g_chain.staking);
+        g_led.flashSync();
         return;
     }
 
