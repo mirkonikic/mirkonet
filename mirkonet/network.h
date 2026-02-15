@@ -106,6 +106,25 @@ public:
         _udpGossip.endPacket();
     }
 
+    // Gossip contract metadata so all nodes know which node hosts each contract.
+    // This allows nodes to fetch bytecode from the host when they need to validate.
+    void broadcastContractInfo(const char* name, const NodeID& host,
+                                const Hash256& codeHash, uint16_t codeLen) {
+        uint8_t buf[128]; size_t off = 0;
+        buf[off++] = (uint8_t)MsgType::CONTRACT_INFO;
+        memcpy(buf+off, selfId.id, 6); off += 6;
+        // Contract metadata payload
+        memcpy(buf+off, name, 16); off += 16;
+        memcpy(buf+off, host.id, 6); off += 6;
+        memcpy(buf+off, codeHash.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf+off, &codeLen, 2); off += 2;
+        _udpGossip.beginPacket(IPAddress(255,255,255,255), UDP_GOSSIP_PORT);
+        _udpGossip.write(buf, off);
+        _udpGossip.endPacket();
+        Serial0.printf("[Net] Broadcast CONTRACT_INFO '%s' hosted by %s (%dB)\n",
+                      name, host.toShortStr().c_str(), codeLen);
+    }
+
     bool requestBlock(IPAddress peerIP, uint32_t blockIndex, Block& outBlock) {
         WiFiClient client;
         Serial0.printf("[Sync] Requesting block #%d from %s...\n",

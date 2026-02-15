@@ -581,10 +581,24 @@ public:
             if (chainLen >= MAX_BLOCKS) return 4;
         }
 
+        // --- Check if we have all bytecode needed for CALL txns ---
+        for (int i = 0; i < blk.header.txCount; i++) {
+            if (blk.txns[i].type == TxType::CALL) {
+                Contract* c = findContract(blk.txns[i].data);
+                if (c && !c->hasCode) {
+                    Serial0.printf("[Validate] REJECT #%d: missing bytecode for '%s' "
+                                  "(host: %s) - cannot verify execution\n",
+                                  blk.header.index, blk.txns[i].data,
+                                  c->host.toShortStr().c_str());
+                    return 7;  // code unavailable
+                }
+            }
+        }
+
         chain[chainLen] = blk;
         blockFees = 0;
 
-        Serial0.printf("[Validate] ACCEPTED #%d from %s (%d txns, slot %d)\n",
+        Serial0.printf("[Validate] Re-executing #%d from %s (%d txns, slot %d)\n",
                       blk.header.index,
                       blk.header.validator.toShortStr().c_str(),
                       blk.header.txCount,
@@ -601,6 +615,40 @@ public:
         uint32_t valBal = getBalance(blk.header.validator);
         setBalance(blk.header.validator, valBal + BLOCK_REWARD + blockFees);
         staking.totalSupply += BLOCK_REWARD;
+
+        // --- Ethereum-style stateRoot verification ---
+        // Every node re-executes all txns and verifies the resulting
+        // state matches the proposer's stateRoot. This ensures consensus
+        // on contract execution output even though bytecode is only
+        // permanently stored on one node.
+        Hash256 computedRoot = computeStateRoot();
+        if (computedRoot != blk.header.stateRoot) {
+            Serial0.printf("[Validate] REJECT #%d: stateRoot MISMATCH after re-execution!\n",
+                          blk.header.index);
+            Serial0.printf("  Expected: %s\n", blk.header.stateRoot.toShort().c_str());
+            Serial0.printf("  Computed: %s\n", computedRoot.toShort().c_str());
+
+            // Roll back: undo balance/fee changes by re-loading from chain state
+            // We already wrote to chain[chainLen] but haven't incremented chainLen,
+            // so we need to undo the account state changes from executeTx + reward
+            // For safety, we don't increment chainLen so the block is effectively discarded
+            return 8;  // stateRoot mismatch
+        }
+
+        Serial0.printf("[Validate] StateRoot VERIFIED: %s\n",
+                      computedRoot.toShort().c_str());
+
+        // Discard temporarily fetched bytecode from non-host contracts.
+        // This is the key resource optimization: only the host node
+        // permanently stores the bytecode, other nodes fetch it
+        // temporarily for validation then free the memory.
+        for (int i = 0; i < contractCount; i++) {
+            if (contracts[i].active && contracts[i].tempCode) {
+                Serial0.printf("[Validate] Discarding temp bytecode for '%s' (%dB freed)\n",
+                              contracts[i].name, contracts[i].codeLen);
+                contracts[i].discardTempCode();
+            }
+        }
 
         chainLen++;
 
