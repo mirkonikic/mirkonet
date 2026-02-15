@@ -114,6 +114,8 @@ public:
             else if (mn == "GPIOWRITE")  r.code[off++] = BYTE_GPIOWRITE;
             else if (mn == "GPIOREAD")   r.code[off++] = BYTE_GPIOREAD;
             else if (mn == "GPIOMODE")   r.code[off++] = BYTE_GPIOMODE;
+            else if (mn == "ADCREAD")    r.code[off++] = BYTE_ADCREAD;
+            else if (mn == "DACWRITE")   r.code[off++] = BYTE_DACWRITE;
 
 
             else if (mn == "PUSH") {
@@ -269,7 +271,10 @@ public:
             case OP5_GPIO:
                 if (mod == 0) out += "GPIOWRITE\n";
                 else if (mod == 1) out += "GPIOREAD\n";
-                else out += "GPIOMODE\n";
+                else if (mod == 2) out += "GPIOMODE\n";
+                else if (mod == 3) out += "ADCREAD\n";
+                else if (mod == 4) out += "DACWRITE\n";
+                else out += "GPIO?" + String(mod) + "\n";
                 pc++; break;
             default: out += "??(0x" + String(byte, HEX) + ")\n"; pc++; break;
             }

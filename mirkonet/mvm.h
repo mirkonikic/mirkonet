@@ -31,7 +31,7 @@
 #define OP5_LOG       0x19  // LOG with topics: mod=topic count (0-4)
 #define OP5_EXT       0x1A  // Extended ops: mod selects sub-op
 #define OP5_XCALL     0x1B  // Contract calls: mod=0 CALL, mod=1 DELEGATECALL
-#define OP5_GPIO      0x1C  // GPIO: mod=0 WRITE, mod=1 READ, mod=2 MODE
+#define OP5_GPIO      0x1C  // GPIO: mod=0 WRITE, mod=1 READ, mod=2 MODE, mod=3 ADC, mod=4 DAC
 // 0x1D-0x1F reserved
 
 // EXT sub-ops (mod field of OP5_EXT)
@@ -94,6 +94,8 @@
 #define BYTE_GPIOWRITE ENCODE(OP5_GPIO, 0)    // ( pin value -- ) set GPIO output
 #define BYTE_GPIOREAD  ENCODE(OP5_GPIO, 1)    // ( pin -- value ) read GPIO input
 #define BYTE_GPIOMODE  ENCODE(OP5_GPIO, 2)    // ( pin mode -- ) set pin mode (1=OUTPUT,0=INPUT)
+#define BYTE_ADCREAD   ENCODE(OP5_GPIO, 3)    // ( pin -- value ) read analog 0-4095 (12-bit)
+#define BYTE_DACWRITE  ENCODE(OP5_GPIO, 4)    // ( pin value -- ) write analog 0-255 (8-bit)
 
 enum MVMStatus : uint8_t {
     VM_RUNNING=0, VM_HALTED=1, VM_REVERTED=2,
@@ -669,6 +671,23 @@ public:
                         _status = VM_ERR_GPIO_DENIED; break;
                     }
                     if (g_gpioCallback) g_gpioCallback(2, (uint8_t)pin, mode);
+                } else if (mod == 3) { // ADCREAD
+                    if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
+                    uint32_t pin = _stack[_sp-1];
+                    if (!gpioIsAllowed((uint8_t)pin)) {
+                        _status = VM_ERR_GPIO_DENIED; break;
+                    }
+                    uint32_t val = 0;
+                    if (g_gpioCallback) val = g_gpioCallback(3, (uint8_t)pin, 0);
+                    _stack[_sp-1] = val;
+                } else if (mod == 4) { // DACWRITE
+                    if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                    uint32_t val = _stack[--_sp];
+                    uint32_t pin = _stack[--_sp];
+                    if (!gpioIsAllowed((uint8_t)pin)) {
+                        _status = VM_ERR_GPIO_DENIED; break;
+                    }
+                    if (g_gpioCallback) g_gpioCallback(4, (uint8_t)pin, val & 0xFF);
                 } else {
                     _status = VM_ERR_CODE_BOUNDS; break;
                 }

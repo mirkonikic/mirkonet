@@ -192,12 +192,15 @@ String webHandleCommand(const String& line) {
         out += "  contracts     List contracts\n";
         out += "  storage <n>   Inspect storage\n";
         out += "  example       Deploy demos\n";
-        out += "-- GPIO (via relay contract) --\n";
+        out += "-- Hardware (via smart contracts) --\n";
         out += "  call relay 1 <pin>  Turn ON relay\n";
         out += "  call relay 2 <pin>  Turn OFF relay\n";
         out += "  call relay 3 <pin>  Toggle relay\n";
         out += "  call relay 0 <pin>  Read state\n";
-        out += "  Allowed pins: 4,5,12-17\n";
+        out += "  Opcodes: GPIOWRITE GPIOREAD GPIOMODE\n";
+        out += "           ADCREAD(12-bit) DACWRITE(8-bit)\n";
+        out += "  GPIO: 4,5,12-17 | DAC: 25,26\n";
+        out += "  ADC: 32-35 (also 4,12-15)\n";
         out += "-- System --\n";
         out += "  debug         Full diagnostics\n";
         out += "  checkpoints   Chain history\n";
@@ -611,6 +614,14 @@ void setup() {
             case 2: // MODE
                 pinMode(pin, value ? OUTPUT : INPUT);
                 Serial0.printf("[GPIO] pin %d mode %s\n", pin, value ? "OUTPUT" : "INPUT");
+                return 0;
+            case 3: // ADC READ (12-bit: 0-4095)
+                { uint32_t v = analogRead(pin);
+                  Serial0.printf("[ADC] pin %d = %u\n", pin, v);
+                  return v; }
+            case 4: // DAC WRITE (8-bit: 0-255, ESP32 GPIO 25/26 only)
+                dacWrite(pin, (uint8_t)(value & 0xFF));
+                Serial0.printf("[DAC] pin %d -> %u\n", pin, value & 0xFF);
                 return 0;
         }
         return 0;
@@ -1514,12 +1525,15 @@ void handleSerial() {
         Serial0.println("  contracts     List contracts");
         Serial0.println("  storage <n>   Inspect storage");
         Serial0.println("  example       Deploy demos");
-        Serial0.println("-- GPIO (via relay contract) --");
+        Serial0.println("-- Hardware (via smart contracts) --");
         Serial0.println("  call relay 1 <pin>  Turn ON relay");
         Serial0.println("  call relay 2 <pin>  Turn OFF relay");
         Serial0.println("  call relay 3 <pin>  Toggle relay");
         Serial0.println("  call relay 0 <pin>  Read state");
-        Serial0.println("  Allowed pins: 4,5,12-17");
+        Serial0.println("  Opcodes: GPIOWRITE GPIOREAD GPIOMODE");
+        Serial0.println("           ADCREAD(12-bit) DACWRITE(8-bit)");
+        Serial0.println("  GPIO: 4,5,12-17 | DAC: 25,26");
+        Serial0.println("  ADC: 32-35 (also 4,12-15)");
         Serial0.println("-- System --");
         Serial0.println("  debug         Full system diagnostics");
         Serial0.println("  checkpoints   Cryptographic chain history");

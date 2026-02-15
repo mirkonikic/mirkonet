@@ -78,9 +78,14 @@
 
 // --- GPIO allowlist (safe pins for smart contract control) ---
 // ESP32: avoid 0,1,3,6-11 (boot/flash/uart). Safe GPIOs for relay/LED control.
-#define GPIO_MAX_ALLOWED    8
+// Pins 25,26 added for DAC output. Pins 32-35 added for ADC input-only.
+// ADC1: GPIO 32-39 (32-35 safe). ADC2: GPIO 4,12-15 (shared with WiFi).
+// DAC1: GPIO 25, DAC2: GPIO 26.
+#define GPIO_MAX_ALLOWED    14
 static const uint8_t GPIO_ALLOWED_PINS[GPIO_MAX_ALLOWED] = {
-    4, 5, 12, 13, 14, 15, 16, 17
+    4, 5, 12, 13, 14, 15, 16, 17,   // digital I/O + ADC2
+    25, 26,                           // DAC output + digital I/O
+    32, 33, 34, 35                    // ADC1 input (34,35 input-only)
 };
 
 #define MAX_CONTRACTS       8
