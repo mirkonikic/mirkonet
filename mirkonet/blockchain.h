@@ -463,6 +463,13 @@ public:
         blk.header.txCount = 0;
 
         for (int i = 0; i < txCount; i++) {
+            // Snapshot state before execution so we can rollback if tx fails.
+            // Failed txs may charge fees (modifying sender balance + blockFees)
+            // but aren't included in the block — validators would never see them,
+            // causing stateRoot mismatch on re-execution.
+            uint32_t savedBlockFees = blockFees;
+            uint32_t savedSenderBal = getBalance(txns[i].sender);
+
             TxResult r = executeTx(txns[i]);
             if (r.success) {
                 blk.txns[blk.header.txCount++] = txns[i];
@@ -470,7 +477,12 @@ public:
                 for (int e = 0; e < vm.eventCount(); e++)
                     Serial0.printf("    Event[%d] = %u\n", e, vm.event(e).value);
             } else {
-                Serial0.printf("  TX[%d] FAIL: %s\n", i, r.message.c_str());
+                // Rollback any state changes from the failed tx (fee charges)
+                // so they don't pollute the state root.
+                // VM already reverts contract storage/balance on failure.
+                setBalance(txns[i].sender, savedSenderBal);
+                blockFees = savedBlockFees;
+                Serial0.printf("  TX[%d] FAIL (rolled back): %s\n", i, r.message.c_str());
             }
         }
 
