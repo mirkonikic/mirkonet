@@ -632,6 +632,14 @@ public:
         chain[chainLen] = blk;
         blockFees = 0;
 
+        // Snapshot account + staking state before re-execution so we can
+        // roll back cleanly if stateRoot verification fails.
+        AccountBalance accountSnap[MAX_ACCOUNTS];
+        memcpy(accountSnap, accounts, sizeof(accounts));
+        uint8_t accountCountSnap = accountCount;
+        uint32_t totalSupplySnap = staking.totalSupply;
+        uint32_t totalStakedSnap = staking.totalStaked;
+
         Serial0.printf("[Validate] Re-executing #%d from %s (%d txns, slot %d)\n",
                       blk.header.index,
                       blk.header.validator.toShortStr().c_str(),
@@ -662,10 +670,13 @@ public:
             Serial0.printf("  Expected: %s\n", blk.header.stateRoot.toShort().c_str());
             Serial0.printf("  Computed: %s\n", computedRoot.toShort().c_str());
 
-            // Roll back: undo balance/fee changes by re-loading from chain state
-            // We already wrote to chain[chainLen] but haven't incremented chainLen,
-            // so we need to undo the account state changes from executeTx + reward
-            // For safety, we don't increment chainLen so the block is effectively discarded
+            // Roll back all state changes from re-execution so the node
+            // remains in a clean state for subsequent validation attempts.
+            memcpy(accounts, accountSnap, sizeof(accounts));
+            accountCount = accountCountSnap;
+            staking.totalSupply = totalSupplySnap;
+            staking.totalStaked = totalStakedSnap;
+            blockFees = 0;
             return 8;  // stateRoot mismatch
         }
 
@@ -785,11 +796,30 @@ public:
             Hash256 ch = contracts[i].stateHash();
             memcpy(buf + off, ch.bytes, HASH_SIZE); off += HASH_SIZE;
         }
-        for (int i = 0; i < accountCount && off < 460; i++) {
-            if (!accounts[i].used) continue;
-            memcpy(buf + off, accounts[i].owner.id, 6); off += 6;
-            memcpy(buf + off, &accounts[i].balance, 4); off += 4;
+
+        // Sort account indices by NodeID so state root is deterministic
+        // regardless of the order accounts were created in the array.
+        // (Different nodes may discover peers in different order.)
+        uint8_t idx[MAX_ACCOUNTS];
+        uint8_t n = 0;
+        for (int i = 0; i < accountCount; i++) {
+            if (accounts[i].used) idx[n++] = i;
         }
+        for (uint8_t a = 1; a < n; a++) {
+            uint8_t key = idx[a];
+            int b = a - 1;
+            while (b >= 0 && memcmp(accounts[idx[b]].owner.id,
+                                    accounts[key].owner.id, 6) > 0) {
+                idx[b + 1] = idx[b];
+                b--;
+            }
+            idx[b + 1] = key;
+        }
+        for (uint8_t i = 0; i < n && off < 460; i++) {
+            memcpy(buf + off, accounts[idx[i]].owner.id, 6); off += 6;
+            memcpy(buf + off, &accounts[idx[i]].balance, 4); off += 4;
+        }
+
         memcpy(buf + off, &staking.totalStaked, 4); off += 4;
         memcpy(buf + off, &staking.activeCount, 1); off += 1;
         return (off > 0) ? sha256(buf, off) : ZERO_HASH;
