@@ -50,6 +50,7 @@ Transaction buildTx(TxType type) {
 // Forward declarations
 bool findNodeByShort(const String& shortId, NodeID& out);
 void deployExamples();
+void deployRelay();
 
 // ==================== Web Dashboard Callbacks ====================
 
@@ -192,6 +193,16 @@ String webHandleCommand(const String& line) {
         out += "  contracts     List contracts\n";
         out += "  storage <n>   Inspect storage\n";
         out += "  example       Deploy demos\n";
+        out += "  relay         Deploy relay contract\n";
+        out += "-- Hardware (via smart contracts) --\n";
+        out += "  call relay 1 <pin>  Turn ON relay\n";
+        out += "  call relay 2 <pin>  Turn OFF relay\n";
+        out += "  call relay 3 <pin>  Toggle relay\n";
+        out += "  call relay 0 <pin>  Read state\n";
+        out += "  Opcodes: GPIOWRITE GPIOREAD GPIOMODE\n";
+        out += "           ADCREAD(12-bit) DACWRITE(8-bit)\n";
+        out += "  GPIO: 4,5,12-17 | DAC: 25,26\n";
+        out += "  ADC: 32-35 (also 4,12-15)\n";
         out += "-- System --\n";
         out += "  debug         Full diagnostics\n";
         out += "  checkpoints   Chain history\n";
@@ -473,6 +484,15 @@ String webHandleCommand(const String& line) {
     else if (cmd == "example") {
         out += "Use the serial console for 'example' (deploys demo contracts)\n";
     }
+    else if (cmd == "relay") {
+        deployRelay();
+        out += "Relay contract submitted to mempool.\n";
+        out += "After next block, use:\n";
+        out += "  call relay 1 <pin>  Turn ON\n";
+        out += "  call relay 2 <pin>  Turn OFF\n";
+        out += "  call relay 3 <pin>  Toggle\n";
+        out += "  call relay 0 <pin>  Read state\n";
+    }
     else {
         out += "Unknown command. Type 'help'.\n";
     }
@@ -588,6 +608,40 @@ void setup() {
         }
     };
     Serial0.println("[Init] Blockchain LED callback registered");
+
+    // Wire up GPIO callback for smart contract hardware control.
+    // Each ESP32 node executes GPIO opcodes locally on its own pins.
+    // The VM enforces the allowlist; this callback does the actual I/O.
+    g_gpioCallback = [](uint8_t op, uint8_t pin, uint32_t value) -> uint32_t {
+        switch (op) {
+            case 0: // WRITE
+                digitalWrite(pin, value ? HIGH : LOW);
+                Serial0.printf("[GPIO] pin %d -> %s\n", pin, value ? "HIGH" : "LOW");
+                return 0;
+            case 1: // READ
+                { uint32_t v = digitalRead(pin);
+                  Serial0.printf("[GPIO] pin %d = %s\n", pin, v ? "HIGH" : "LOW");
+                  return v; }
+            case 2: // MODE
+                pinMode(pin, value ? OUTPUT : INPUT);
+                Serial0.printf("[GPIO] pin %d mode %s\n", pin, value ? "OUTPUT" : "INPUT");
+                return 0;
+            case 3: // ADC READ (12-bit: 0-4095)
+                { uint32_t v = analogRead(pin);
+                  Serial0.printf("[ADC] pin %d = %u\n", pin, v);
+                  return v; }
+            case 4: // DAC WRITE (8-bit: 0-255, ESP32 GPIO 25/26 only)
+                dacWrite(pin, (uint8_t)(value & 0xFF));
+                Serial0.printf("[DAC] pin %d -> %u\n", pin, value & 0xFF);
+                return 0;
+        }
+        return 0;
+    };
+    Serial0.println("[Init] GPIO callback registered");
+    Serial0.printf("[Init] Allowed GPIO pins:");
+    for (int i = 0; i < GPIO_MAX_ALLOWED; i++)
+        Serial0.printf(" %d", GPIO_ALLOWED_PINS[i]);
+    Serial0.println();
 
     g_led.flashInitComplete();
     Serial0.println("\n======== INIT COMPLETE ========");
@@ -1482,6 +1536,16 @@ void handleSerial() {
         Serial0.println("  contracts     List contracts");
         Serial0.println("  storage <n>   Inspect storage");
         Serial0.println("  example       Deploy demos");
+        Serial0.println("  relay         Deploy relay contract");
+        Serial0.println("-- Hardware (via smart contracts) --");
+        Serial0.println("  call relay 1 <pin>  Turn ON relay");
+        Serial0.println("  call relay 2 <pin>  Turn OFF relay");
+        Serial0.println("  call relay 3 <pin>  Toggle relay");
+        Serial0.println("  call relay 0 <pin>  Read state");
+        Serial0.println("  Opcodes: GPIOWRITE GPIOREAD GPIOMODE");
+        Serial0.println("           ADCREAD(12-bit) DACWRITE(8-bit)");
+        Serial0.println("  GPIO: 4,5,12-17 | DAC: 25,26");
+        Serial0.println("  ADC: 32-35 (also 4,12-15)");
         Serial0.println("-- System --");
         Serial0.println("  debug         Full system diagnostics");
         Serial0.println("  checkpoints   Cryptographic chain history");
@@ -1756,6 +1820,9 @@ void handleSerial() {
     else if (cmd == "example") {
         deployExamples();
     }
+    else if (cmd == "relay") {
+        deployRelay();
+    }
     else {
         Serial0.println("Unknown command. Type 'help'.");
     }
@@ -1946,12 +2013,219 @@ tally:
         } else Serial0.println("voting err: " + r.error);
     }
 
-    Serial0.println("\n[Example] 3 contracts submitted to mempool.");
+    // --- relay: GPIO smart contract for controlling relays/LEDs ---
+    // ARG 0: function (0=status, 1=on, 2=off, 3=toggle)
+    // ARG 1: GPIO pin number (must be in allowlist: 4,5,12,13,14,15,16,17)
+    // Storage slot 0+pin stores the current state for that pin.
+    {
+        String src = R"(
+; relay - blockchain-controlled GPIO
+; arg0: 0=status 1=on 2=off 3=toggle
+; arg1: pin number
+ARG 0
+DUP
+PUSH 0
+EQ
+JUMPI @status
+DUP
+PUSH 1
+EQ
+JUMPI @on
+DUP
+PUSH 2
+EQ
+JUMPI @off
+DUP
+PUSH 3
+EQ
+JUMPI @toggle
+REVERT
+status:
+  POP
+  ARG 1
+  SLOAD
+  EMIT
+  HALT
+on:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  PUSH 1
+  GPIOWRITE
+  ARG 1
+  PUSH 1
+  SSTORE
+  PUSH 1
+  EMIT
+  HALT
+off:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  PUSH 0
+  GPIOWRITE
+  ARG 1
+  PUSH 0
+  SSTORE
+  PUSH 0
+  EMIT
+  HALT
+toggle:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  SLOAD
+  PUSH 0
+  EQ
+  JUMPI @t_on
+  ARG 1
+  PUSH 0
+  GPIOWRITE
+  ARG 1
+  PUSH 0
+  SSTORE
+  PUSH 0
+  EMIT
+  HALT
+t_on:
+  ARG 1
+  PUSH 1
+  GPIOWRITE
+  ARG 1
+  PUSH 1
+  SSTORE
+  PUSH 1
+  EMIT
+  HALT
+)";
+        auto r = MVMAssembler::assemble(src);
+        if (r.ok) {
+            Serial0.printf("  relay:   %d bytes\n", r.len);
+            directDeploy("relay", r.code, r.len);
+        } else Serial0.println("relay err: " + r.error);
+    }
+
+    Serial0.println("\n[Example] 4 contracts submitted to mempool.");
     Serial0.println("  Wait for next block(s) to deploy, then try:");
     Serial0.println("  call counter 1    (increment)");
     Serial0.println("  call counter 0    (read)");
     Serial0.println("  call token 1 100  (mint 100)");
     Serial0.println("  call token 0      (balance)");
     Serial0.println("  call voting 1 1   (vote option 1)");
-    Serial0.println("  call voting 2 1   (tally option 1)\n");
+    Serial0.println("  call voting 2 1   (tally option 1)");
+    Serial0.println("  call relay 1 4    (turn ON relay on GPIO 4)");
+    Serial0.println("  call relay 2 4    (turn OFF relay on GPIO 4)");
+    Serial0.println("  call relay 3 4    (toggle relay on GPIO 4)");
+    Serial0.println("  call relay 0 4    (read relay state on GPIO 4)\n");
+}
+
+void deployRelay() {
+    Serial0.println("\n[Relay] Deploying relay contract...\n");
+
+    String src = R"(
+; relay - blockchain-controlled GPIO
+; arg0: 0=status 1=on 2=off 3=toggle
+; arg1: pin number
+ARG 0
+DUP
+PUSH 0
+EQ
+JUMPI @status
+DUP
+PUSH 1
+EQ
+JUMPI @on
+DUP
+PUSH 2
+EQ
+JUMPI @off
+DUP
+PUSH 3
+EQ
+JUMPI @toggle
+REVERT
+status:
+  POP
+  ARG 1
+  SLOAD
+  EMIT
+  HALT
+on:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  PUSH 1
+  GPIOWRITE
+  ARG 1
+  PUSH 1
+  SSTORE
+  PUSH 1
+  EMIT
+  HALT
+off:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  PUSH 0
+  GPIOWRITE
+  ARG 1
+  PUSH 0
+  SSTORE
+  PUSH 0
+  EMIT
+  HALT
+toggle:
+  POP
+  ARG 1
+  PUSH 1
+  GPIOMODE
+  ARG 1
+  SLOAD
+  PUSH 0
+  EQ
+  JUMPI @t_on
+  ARG 1
+  PUSH 0
+  GPIOWRITE
+  ARG 1
+  PUSH 0
+  SSTORE
+  PUSH 0
+  EMIT
+  HALT
+t_on:
+  ARG 1
+  PUSH 1
+  GPIOWRITE
+  ARG 1
+  PUSH 1
+  SSTORE
+  PUSH 1
+  EMIT
+  HALT
+)";
+
+    auto r = MVMAssembler::assemble(src);
+    if (r.ok) {
+        Serial0.printf("  relay: %d bytes\n", r.len);
+        directDeploy("relay", r.code, r.len);
+        Serial0.println("\n[Relay] Contract submitted to mempool.");
+        Serial0.println("  After next block, use:");
+        Serial0.println("  call relay 1 <pin>  Turn ON");
+        Serial0.println("  call relay 2 <pin>  Turn OFF");
+        Serial0.println("  call relay 3 <pin>  Toggle");
+        Serial0.println("  call relay 0 <pin>  Read state\n");
+    } else {
+        Serial0.println("[Relay] Assembly error: " + r.error);
+    }
 }

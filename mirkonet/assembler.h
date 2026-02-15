@@ -111,6 +111,11 @@ public:
             else if (mn == "CALL")      r.code[off++] = BYTE_CALL;
             else if (mn == "DELEGATECALL" || mn == "DCALL")
                                         r.code[off++] = BYTE_DCALL;
+            else if (mn == "GPIOWRITE")  r.code[off++] = BYTE_GPIOWRITE;
+            else if (mn == "GPIOREAD")   r.code[off++] = BYTE_GPIOREAD;
+            else if (mn == "GPIOMODE")   r.code[off++] = BYTE_GPIOMODE;
+            else if (mn == "ADCREAD")    r.code[off++] = BYTE_ADCREAD;
+            else if (mn == "DACWRITE")   r.code[off++] = BYTE_DACWRITE;
 
 
             else if (mn == "PUSH") {
@@ -262,6 +267,14 @@ public:
                 pc++; break;
             case OP5_XCALL:
                 out += (mod == 0) ? "CALL\n" : "DELEGATECALL\n";
+                pc++; break;
+            case OP5_GPIO:
+                if (mod == 0) out += "GPIOWRITE\n";
+                else if (mod == 1) out += "GPIOREAD\n";
+                else if (mod == 2) out += "GPIOMODE\n";
+                else if (mod == 3) out += "ADCREAD\n";
+                else if (mod == 4) out += "DACWRITE\n";
+                else out += "GPIO?" + String(mod) + "\n";
                 pc++; break;
             default: out += "??(0x" + String(byte, HEX) + ")\n"; pc++; break;
             }

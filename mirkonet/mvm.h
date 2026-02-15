@@ -31,7 +31,8 @@
 #define OP5_LOG       0x19  // LOG with topics: mod=topic count (0-4)
 #define OP5_EXT       0x1A  // Extended ops: mod selects sub-op
 #define OP5_XCALL     0x1B  // Contract calls: mod=0 CALL, mod=1 DELEGATECALL
-// 0x1C-0x1F reserved
+#define OP5_GPIO      0x1C  // GPIO: mod=0 WRITE, mod=1 READ, mod=2 MODE, mod=3 ADC, mod=4 DAC
+// 0x1D-0x1F reserved
 
 // EXT sub-ops (mod field of OP5_EXT)
 #define EXT_ISZERO    0   // ( a -- a==0 )
@@ -90,6 +91,11 @@
 #define BYTE_GASLEFT   ENCODE(OP5_EXT, EXT_GASLEFT)
 #define BYTE_CALL      ENCODE(OP5_XCALL, 0)
 #define BYTE_DCALL     ENCODE(OP5_XCALL, 1)   // DELEGATECALL
+#define BYTE_GPIOWRITE ENCODE(OP5_GPIO, 0)    // ( pin value -- ) set GPIO output
+#define BYTE_GPIOREAD  ENCODE(OP5_GPIO, 1)    // ( pin -- value ) read GPIO input
+#define BYTE_GPIOMODE  ENCODE(OP5_GPIO, 2)    // ( pin mode -- ) set pin mode (1=OUTPUT,0=INPUT)
+#define BYTE_ADCREAD   ENCODE(OP5_GPIO, 3)    // ( pin -- value ) read analog 0-4095 (12-bit)
+#define BYTE_DACWRITE  ENCODE(OP5_GPIO, 4)    // ( pin value -- ) write analog 0-255 (8-bit)
 
 enum MVMStatus : uint8_t {
     VM_RUNNING=0, VM_HALTED=1, VM_REVERTED=2,
@@ -97,13 +103,14 @@ enum MVMStatus : uint8_t {
     VM_ERR_BAD_JUMP=6, VM_ERR_CODE_BOUNDS=7, VM_ERR_DIV_ZERO=8,
     VM_ERR_STORAGE_FULL=9, VM_ERR_BAD_ARG=10,
     VM_ERR_CALL_DEPTH=11, VM_ERR_CALL_FAIL=12, VM_ERR_MEM_BOUNDS=13,
+    VM_ERR_GPIO_DENIED=14,
 };
 
 inline const char* statusName(MVMStatus s) {
     const char* names[] = {"RUNNING","OK","REVERTED","STACK_OVER","STACK_UNDER",
         "OUT_OF_GAS","BAD_JUMP","CODE_BOUNDS","DIV_ZERO","STORAGE_FULL","BAD_ARG",
-        "CALL_DEPTH","CALL_FAIL","MEM_BOUNDS"};
-    return (s <= VM_ERR_MEM_BOUNDS) ? names[s] : "UNKNOWN";
+        "CALL_DEPTH","CALL_FAIL","MEM_BOUNDS","GPIO_DENIED"};
+    return (s <= VM_ERR_GPIO_DENIED) ? names[s] : "UNKNOWN";
 }
 inline bool isTerminal(MVMStatus s) { return s != VM_RUNNING; }
 
@@ -232,6 +239,20 @@ struct MVMContext {
 // Implemented by BlockchainState; set before execution.
 typedef Contract* (*ContractResolver)(const char* name);
 static ContractResolver g_contractResolver = nullptr;
+
+// GPIO callback: called by MVM when a GPIO opcode executes.
+// Only the local node performs actual hardware I/O; remote nodes
+// still execute the opcode (for state root agreement) but skip hardware.
+// op: 0=WRITE, 1=READ, 2=MODE. Returns read value for READ, 0 otherwise.
+typedef uint32_t (*GPIOCallback)(uint8_t op, uint8_t pin, uint32_t value);
+static GPIOCallback g_gpioCallback = nullptr;
+
+// Check if a pin is in the allowlist
+inline bool gpioIsAllowed(uint8_t pin) {
+    for (int i = 0; i < GPIO_MAX_ALLOWED; i++)
+        if (GPIO_ALLOWED_PINS[i] == pin) return true;
+    return false;
+}
 
 
 class MirkoVM {
@@ -618,6 +639,61 @@ public:
                 _pc++; break;
             }
 
+            case OP5_GPIO: {
+                // GPIO hardware control from smart contracts.
+                // mod=0: WRITE (pin value --)  set output HIGH/LOW
+                // mod=1: READ  (pin -- value)  read digital input
+                // mod=2: MODE  (pin mode --)   configure pin (1=OUTPUT, 0=INPUT)
+                // Pin must be in GPIO_ALLOWED_PINS allowlist.
+                // Actual hardware I/O only runs on local node via g_gpioCallback.
+                if (mod == 0) { // GPIOWRITE
+                    if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                    uint32_t val = _stack[--_sp];
+                    uint32_t pin = _stack[--_sp];
+                    if (!gpioIsAllowed((uint8_t)pin)) {
+                        _status = VM_ERR_GPIO_DENIED; break;
+                    }
+                    if (g_gpioCallback) g_gpioCallback(0, (uint8_t)pin, val);
+                } else if (mod == 1) { // GPIOREAD
+                    if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
+                    uint32_t pin = _stack[_sp-1];
+                    if (!gpioIsAllowed((uint8_t)pin)) {
+                        _status = VM_ERR_GPIO_DENIED; break;
+                    }
+                    uint32_t val = 0;
+                    if (g_gpioCallback) val = g_gpioCallback(1, (uint8_t)pin, 0);
+                    _stack[_sp-1] = val;
+                } else if (mod == 2) { // GPIOMODE
+                    if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                    uint32_t mode = _stack[--_sp];
+                    uint32_t pin  = _stack[--_sp];
+                    if (!gpioIsAllowed((uint8_t)pin)) {
+                        _status = VM_ERR_GPIO_DENIED; break;
+                    }
+                    if (g_gpioCallback) g_gpioCallback(2, (uint8_t)pin, mode);
+                } else if (mod == 3) { // ADCREAD
+                    if (_sp == 0) { _status = VM_ERR_STACK_UNDER; break; }
+                    uint32_t pin = _stack[_sp-1];
+                    if (!gpioIsAllowed((uint8_t)pin)) {
+                        _status = VM_ERR_GPIO_DENIED; break;
+                    }
+                    uint32_t val = 0;
+                    if (g_gpioCallback) val = g_gpioCallback(3, (uint8_t)pin, 0);
+                    _stack[_sp-1] = val;
+                } else if (mod == 4) { // DACWRITE
+                    if (_sp < 2) { _status = VM_ERR_STACK_UNDER; break; }
+                    uint32_t val = _stack[--_sp];
+                    uint32_t pin = _stack[--_sp];
+                    if (!gpioIsAllowed((uint8_t)pin)) {
+                        _status = VM_ERR_GPIO_DENIED; break;
+                    }
+                    if (g_gpioCallback) g_gpioCallback(4, (uint8_t)pin, val & 0xFF);
+                } else {
+                    _status = VM_ERR_CODE_BOUNDS; break;
+                }
+                _pc++; break;
+            }
+
             default:
                 _status = VM_ERR_CODE_BOUNDS; break;
             }
@@ -690,6 +766,7 @@ private:
                 if (mod == EXT_ISZERO) return GAS_VERYLOW;
                 return GAS_BALANCE; // ADDRESS, ORIGIN, NUMBER, TIMESTAMP, GASLEFT
             case OP5_XCALL:     return GAS_CALL;
+            case OP5_GPIO:      return GAS_GPIO;
             default:            return GAS_BASE;
         }
     }
