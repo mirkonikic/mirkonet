@@ -5,8 +5,11 @@
 
 // LED feedback callback for validation stages
 // Set by mirkonet.ino to wire blockchain validation events to NeoPixel LED.
-// Callback receives: event type (0=validation pass, 1=rejection, 2=tx success, 3=tx fail, 4=tx type flash)
-// and an optional parameter (tx type for event 4, VM status for event 2/3).
+// Events:
+//   0=state root verified, 1=rejection (param=code), 2=tx success (param=txType),
+//   3=tx fail (param=txType), 4=validate index OK, 5=validate hash OK,
+//   6=validate PoS OK, 7=validate slot OK, 8=re-executing block,
+//   9=pruning, 10=epoch election
 typedef void (*BlockchainLedCallback)(uint8_t event, uint8_t param);
 static BlockchainLedCallback g_blockchainLedCb = nullptr;
 
@@ -586,11 +589,15 @@ public:
         staking.totalSupply += BLOCK_REWARD;
         chainLen++;
 
-        if (height() % EPOCH_LENGTH == 0)
+        if (height() % EPOCH_LENGTH == 0) {
             staking.runElection(height() / EPOCH_LENGTH);
+            if (g_blockchainLedCb) g_blockchainLedCb(10, 0);  // epoch election
+        }
 
-        if (chainLen >= PRUNE_TRIGGER)
+        if (chainLen >= PRUNE_TRIGGER) {
+            if (g_blockchainLedCb) g_blockchainLedCb(9, 0);  // pruning
             pruneChain();
+        }
 
         return true;
     }
@@ -602,8 +609,10 @@ public:
         if (blk.header.index != expectedIdx) {
             Serial0.printf("[Validate] REJECT #%d: expected #%d\n",
                           blk.header.index, expectedIdx);
+            if (g_blockchainLedCb) g_blockchainLedCb(1, 1);  // reject: wrong index
             return 1;
         }
+        if (g_blockchainLedCb) g_blockchainLedCb(4, 0);  // index check OK
 
         Hash256 ourTip = (chainLen > 0) ? chain[chainLen-1].blockHash : ZERO_HASH;
         if (blk.header.prevHash != ourTip) {
@@ -611,6 +620,7 @@ public:
                           blk.header.index);
             Serial0.printf("  Expected: %s\n", ourTip.toShort().c_str());
             Serial0.printf("  Got:      %s\n", blk.header.prevHash.toShort().c_str());
+            if (g_blockchainLedCb) g_blockchainLedCb(1, 2);  // reject: prevHash
             return 2;
         }
 
@@ -619,8 +629,10 @@ public:
         if (copy.blockHash != blk.blockHash) {
             Serial0.printf("[Validate] REJECT #%d: hash mismatch\n",
                           blk.header.index);
+            if (g_blockchainLedCb) g_blockchainLedCb(1, 3);  // reject: bad hash
             return 3;
         }
+        if (g_blockchainLedCb) g_blockchainLedCb(5, 0);  // hash check OK
 
         if (staking.activeCount > 1) {
             if (!staking.isActiveValidator(blk.header.validator)) {
@@ -631,6 +643,7 @@ public:
                 for (int i = 0; i < staking.activeCount; i++)
                     Serial0.print(staking.activeSet[i].toShortStr() + " ");
                 Serial0.println();
+                if (g_blockchainLedCb) g_blockchainLedCb(1, 5);  // reject: not validator
                 return 5;
             }
 
@@ -640,6 +653,7 @@ public:
                               blk.header.index, blk.header.slot,
                               expectedProducer.toShortStr().c_str(),
                               blk.header.validator.toShortStr().c_str());
+                if (g_blockchainLedCb) g_blockchainLedCb(1, 6);  // reject: wrong slot
                 return 6;
             }
 
@@ -648,10 +662,12 @@ public:
                           blk.header.validator.toShortStr().c_str(),
                           staking.getValidatorIndex(blk.header.validator) + 1,
                           staking.activeCount);
+            if (g_blockchainLedCb) g_blockchainLedCb(6, 0);  // PoS check OK
         }
 
         if (chainLen >= MAX_BLOCKS) {
             Serial0.println("[Validate] Chain full, pruning first...");
+            if (g_blockchainLedCb) g_blockchainLedCb(9, 0);  // pruning
             pruneChain();
             if (chainLen >= MAX_BLOCKS) return 4;
         }
@@ -665,6 +681,7 @@ public:
                                   "(host: %s) - cannot verify execution\n",
                                   blk.header.index, blk.txns[i].data,
                                   c->host.toShortStr().c_str());
+                    if (g_blockchainLedCb) g_blockchainLedCb(1, 7);  // reject: missing code
                     return 7;  // code unavailable
                 }
             }
@@ -681,6 +698,7 @@ public:
         uint32_t totalSupplySnap = staking.totalSupply;
         uint32_t totalStakedSnap = staking.totalStaked;
 
+        if (g_blockchainLedCb) g_blockchainLedCb(8, 0);  // re-executing block
         Serial0.printf("[Validate] Re-executing #%d from %s (%d txns, slot %d)\n",
                       blk.header.index,
                       blk.header.validator.toShortStr().c_str(),
@@ -718,6 +736,7 @@ public:
             staking.totalSupply = totalSupplySnap;
             staking.totalStaked = totalStakedSnap;
             blockFees = 0;
+            if (g_blockchainLedCb) g_blockchainLedCb(1, 8);  // reject: state mismatch
             return 8;  // stateRoot mismatch
         }
 
@@ -759,10 +778,13 @@ public:
             }
 
             staking.runElection(newEpoch);
+            if (g_blockchainLedCb) g_blockchainLedCb(10, 0);  // epoch election
         }
 
-        if (chainLen >= PRUNE_TRIGGER)
+        if (chainLen >= PRUNE_TRIGGER) {
+            if (g_blockchainLedCb) g_blockchainLedCb(9, 0);  // pruning
             pruneChain();
+        }
 
         return 0;
     }
