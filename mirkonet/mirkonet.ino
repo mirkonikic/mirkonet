@@ -2026,9 +2026,12 @@ tally:
     // Storage slot 0+pin stores the current state for that pin.
     {
         String src = R"(
-; relay - blockchain-controlled GPIO
+; relay - blockchain-controlled GPIO (active-LOW)
 ; arg0: 0=status 1=on 2=off 3=toggle
 ; arg1: pin number
+; Note: GPIO is inverted for active-LOW relay modules
+;   ON  = GPIO LOW  (PUSH 0 GPIOWRITE)
+;   OFF = GPIO HIGH (PUSH 1 GPIOWRITE)
 ARG 0
 DUP
 PUSH 0
@@ -2059,7 +2062,7 @@ on:
   PUSH 1
   GPIOMODE
   ARG 1
-  PUSH 1
+  PUSH 0
   GPIOWRITE
   ARG 1
   PUSH 1
@@ -2073,7 +2076,7 @@ off:
   PUSH 1
   GPIOMODE
   ARG 1
-  PUSH 0
+  PUSH 1
   GPIOWRITE
   ARG 1
   PUSH 0
@@ -2092,7 +2095,7 @@ toggle:
   EQ
   JUMPI @t_on
   ARG 1
-  PUSH 0
+  PUSH 1
   GPIOWRITE
   ARG 1
   PUSH 0
@@ -2102,7 +2105,7 @@ toggle:
   HALT
 t_on:
   ARG 1
-  PUSH 1
+  PUSH 0
   GPIOWRITE
   ARG 1
   PUSH 1
@@ -2136,9 +2139,12 @@ void deployRelay() {
     Serial0.println("\n[Relay] Deploying relay contract...\n");
 
     String src = R"(
-; relay - blockchain-controlled GPIO
+; relay - blockchain-controlled GPIO (active-LOW)
 ; arg0: 0=status 1=on 2=off 3=toggle
 ; arg1: pin number
+; Note: GPIO is inverted for active-LOW relay modules
+;   ON  = GPIO LOW  (PUSH 0 GPIOWRITE)
+;   OFF = GPIO HIGH (PUSH 1 GPIOWRITE)
 ARG 0
 DUP
 PUSH 0
@@ -2169,7 +2175,7 @@ on:
   PUSH 1
   GPIOMODE
   ARG 1
-  PUSH 1
+  PUSH 0
   GPIOWRITE
   ARG 1
   PUSH 1
@@ -2183,7 +2189,7 @@ off:
   PUSH 1
   GPIOMODE
   ARG 1
-  PUSH 0
+  PUSH 1
   GPIOWRITE
   ARG 1
   PUSH 0
@@ -2202,7 +2208,7 @@ toggle:
   EQ
   JUMPI @t_on
   ARG 1
-  PUSH 0
+  PUSH 1
   GPIOWRITE
   ARG 1
   PUSH 0
@@ -2212,7 +2218,7 @@ toggle:
   HALT
 t_on:
   ARG 1
-  PUSH 1
+  PUSH 0
   GPIOWRITE
   ARG 1
   PUSH 1
