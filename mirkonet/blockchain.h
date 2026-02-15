@@ -44,25 +44,54 @@ public:
         gen.header.index = 0;
         gen.header.timestamp = 0;
         gen.header.prevHash = ZERO_HASH;
+        gen.header.validator = founder;
         gen.header.txCount = 0;
         gen.header.slot = 0;
         gen.header.epoch = 0;
         gen.header.reward = 0;
-        gen.header.stateRoot = ZERO_HASH;
-        gen.computeHash();
-        chainLen = 1;
 
+        // Set up founder account + staking BEFORE computing stateRoot
         setBalance(founder, GENESIS_PER_NODE);
         staking.totalSupply = GENESIS_PER_NODE;
 
         uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        uint32_t bal = getBalance(founder);
-        bal -= stakeAmt;
-        setBalance(founder, bal);
+        setBalance(founder, GENESIS_PER_NODE - stakeAmt);
         staking.addGenesisValidator(founder, stakeAmt);
 
-        Serial0.printf("[Genesis] Founder %s: %u liquid, %u staked\n",
-                      founder.toShortStr().c_str(), getBalance(founder), stakeAmt);
+        // Genesis block commits to the founder's initial state
+        gen.header.stateRoot = computeStateRoot();
+        gen.computeHash();
+        chainLen = 1;
+
+        Serial0.printf("[Genesis] Founder %s: %u liquid, %u staked, root=%s\n",
+                      founder.toShortStr().c_str(), getBalance(founder), stakeAmt,
+                      gen.header.stateRoot.toShort().c_str());
+    }
+
+    // Adopt a peer's genesis block: wipe local state and rebuild from
+    // the genesis founder. Called when a joining node discovers an
+    // existing network. selfId is added as a genesis node if different
+    // from founder.
+    void adoptGenesis(const Block& genesis, const NodeID& selfId) {
+        resetState();
+        chain[0] = genesis;
+        chainLen = 1;
+
+        NodeID founder = genesis.header.validator;
+        setBalance(founder, GENESIS_PER_NODE);
+        staking.totalSupply = GENESIS_PER_NODE;
+
+        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
+        setBalance(founder, GENESIS_PER_NODE - stakeAmt);
+        staking.addGenesisValidator(founder, stakeAmt);
+
+        if (!(selfId == founder)) {
+            addGenesisNode(selfId);
+        }
+
+        Serial0.printf("[Genesis] Adopted genesis from %s, hash=%s\n",
+                      founder.toShortStr().c_str(),
+                      genesis.blockHash.toShort().c_str());
     }
 
     void addGenesisNode(const NodeID& node) {
@@ -71,9 +100,7 @@ public:
         staking.totalSupply += GENESIS_PER_NODE;
 
         uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        uint32_t bal = getBalance(node);
-        bal -= stakeAmt;
-        setBalance(node, bal);
+        setBalance(node, GENESIS_PER_NODE - stakeAmt);
         staking.addGenesisValidator(node, stakeAmt);
         staking.runElection(0);
 
@@ -724,24 +751,6 @@ public:
     }
 
 
-    bool replaceGenesis(const Block& peerGenesis) {
-        if (peerGenesis.header.index != 0) return false;
-
-        if (chainLen > 0 && chain[0].blockHash == peerGenesis.blockHash)
-            return true;
-
-        Serial0.println("[Sync] Replacing genesis with peer's genesis");
-
-        resetState();
-
-        chain[0] = peerGenesis;
-        chainLen = 1;
-
-        Serial0.printf("[Sync] New genesis hash: %s\n",
-                      peerGenesis.blockHash.toShort().c_str());
-        return true;
-    }
-
     // Reset all state back to empty (preserving nothing)
     void resetState() {
         memset(accounts, 0, sizeof(accounts));
@@ -762,25 +771,9 @@ public:
         if (chainLen == 0) return false;
 
         Block genesis = chain[0];  // save genesis block
-
         Serial0.println("[Reorg] Resetting to genesis for chain reorg");
 
-        resetState();
-
-        chain[0] = genesis;
-        chainLen = 1;
-
-        // Rebuild genesis state from the founder
-        setBalance(genesis.header.validator, GENESIS_PER_NODE);
-        staking.totalSupply = GENESIS_PER_NODE;
-        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
-        setBalance(genesis.header.validator, GENESIS_PER_NODE - stakeAmt);
-        staking.addGenesisValidator(genesis.header.validator, stakeAmt);
-
-        // Re-add ourselves if we're not the genesis founder
-        if (!(selfId == genesis.header.validator)) {
-            addGenesisNode(selfId);
-        }
+        adoptGenesis(genesis, selfId);
 
         Serial0.printf("[Reorg] Reset to genesis hash=%s, height=%d\n",
                       genesis.blockHash.toShort().c_str(), height());
