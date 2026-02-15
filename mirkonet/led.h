@@ -75,6 +75,8 @@ public:
     void flashBlock()   { flashColor(0, 60, 0, 300); }
     void flashReject()  { flashColor(80, 0, 0, 400); }
     void flashEpoch()   { flashColor(60, 0, 60, 500); }
+    void flashPeer()    { flashColor(0, 50, 30, 250); }   // Teal flash for new peer
+    void flashSync()    { flashColor(40, 0, 60, 200); }   // Purple flash for sync progress
 
     void bootSequence() {
 #if HAS_RGB_LED
@@ -107,80 +109,229 @@ public:
             }
         }
 
-        if (now - _lastUpdate < 200) return;
+        // Update every 30ms for smooth animations
+        if (now - _lastUpdate < 30) return;
         _lastUpdate = now;
 
         _blinkOn = !_blinkOn;
-        uint32_t slowBlink = (now / 800) % 2;
-        uint32_t fastBlink = (now / 200) % 2;
-        uint32_t breathe = (now / 50) % 100;
 
 #if HAS_RGB_LED
         switch (_state) {
             case LED_OFF:
                 setRGB(0, 0, 0);
                 break;
+
             case LED_NO_WIFI:
-
-                { uint8_t v = (uint8_t)(slowBlink ? 40 : 5);
-                  setRGB(v, 0, 0); }
+                // Urgent red pulse: smooth sine-like breathing, 1.2s period
+                {
+                    uint32_t phase = (now % 1200);
+                    // Triangle wave 0→60→0 with a floor at 3 so it never fully goes dark
+                    uint8_t v;
+                    if (phase < 600)
+                        v = (uint8_t)(3 + (uint32_t)57 * phase / 600);
+                    else
+                        v = (uint8_t)(3 + (uint32_t)57 * (1200 - phase) / 600);
+                    setRGB(v, 0, 0);
+                }
                 break;
+
             case LED_NO_PEERS:
-
-                { uint8_t v = (uint8_t)(slowBlink ? 30 : 2);
-                  setRGB(v, v/2, 0); }
+                // Searching orange sweep: alternates between orange and dim amber, 2s period
+                {
+                    uint32_t phase = (now % 2000);
+                    uint8_t r, g;
+                    if (phase < 1000) {
+                        // Ramp up
+                        r = (uint8_t)(4 + (uint32_t)46 * phase / 1000);
+                        g = (uint8_t)(2 + (uint32_t)20 * phase / 1000);
+                    } else {
+                        // Ramp down
+                        uint32_t down = phase - 1000;
+                        r = (uint8_t)(4 + (uint32_t)46 * (1000 - down) / 1000);
+                        g = (uint8_t)(2 + (uint32_t)20 * (1000 - down) / 1000);
+                    }
+                    setRGB(r, g, 0);
+                }
                 break;
+
             case LED_CONNECTED:
-
-                setRGB(0, 15, 0);
+                // Green heartbeat: double-pulse every 2s (like a real heartbeat)
+                {
+                    uint32_t phase = (now % 2000);
+                    uint8_t v;
+                    if (phase < 120) {
+                        // First beat up
+                        v = (uint8_t)(5 + (uint32_t)35 * phase / 120);
+                    } else if (phase < 240) {
+                        // First beat down
+                        v = (uint8_t)(5 + (uint32_t)35 * (240 - phase) / 120);
+                    } else if (phase < 400) {
+                        // Brief pause
+                        v = 5;
+                    } else if (phase < 520) {
+                        // Second beat up (stronger)
+                        v = (uint8_t)(5 + (uint32_t)45 * (phase - 400) / 120);
+                    } else if (phase < 640) {
+                        // Second beat down
+                        v = (uint8_t)(5 + (uint32_t)45 * (640 - phase) / 120);
+                    } else {
+                        // Rest
+                        v = 5;
+                    }
+                    setRGB(0, v, 0);
+                }
                 break;
+
             case LED_VALIDATOR:
-
-                setRGB(0, 15, 15);
+                // Cyan heartbeat with a glow: double-pulse + gentle background glow
+                {
+                    uint32_t phase = (now % 1800);
+                    uint8_t v;
+                    if (phase < 100) {
+                        v = (uint8_t)(8 + (uint32_t)47 * phase / 100);
+                    } else if (phase < 200) {
+                        v = (uint8_t)(8 + (uint32_t)47 * (200 - phase) / 100);
+                    } else if (phase < 350) {
+                        v = 8;
+                    } else if (phase < 450) {
+                        v = (uint8_t)(8 + (uint32_t)52 * (phase - 350) / 100);
+                    } else if (phase < 550) {
+                        v = (uint8_t)(8 + (uint32_t)52 * (550 - phase) / 100);
+                    } else {
+                        // Gentle glow during rest
+                        uint32_t rest = (phase - 550);
+                        uint32_t restCycle = rest % 500;
+                        if (restCycle < 250)
+                            v = (uint8_t)(6 + (uint32_t)6 * restCycle / 250);
+                        else
+                            v = (uint8_t)(6 + (uint32_t)6 * (500 - restCycle) / 250);
+                    }
+                    setRGB(0, v, v);
+                }
                 break;
+
             case LED_PRODUCING:
-
-                { uint8_t v = (uint8_t)(fastBlink ? 60 : 10);
-                  setRGB(0, 0, v); }
+                // Rapid blue strobe with white peaks during block production
+                {
+                    uint32_t phase = (now % 400);
+                    if (phase < 80) {
+                        // Bright white-blue flash
+                        uint8_t v = (uint8_t)(30 + (uint32_t)50 * phase / 80);
+                        setRGB(v / 3, v / 3, v);
+                    } else if (phase < 160) {
+                        // Fade back
+                        uint8_t v = (uint8_t)(30 + (uint32_t)50 * (160 - phase) / 80);
+                        setRGB(v / 3, v / 3, v);
+                    } else if (phase < 240) {
+                        // Second pulse
+                        uint8_t v = (uint8_t)(20 + (uint32_t)40 * (phase - 160) / 80);
+                        setRGB(0, 0, v);
+                    } else if (phase < 320) {
+                        uint8_t v = (uint8_t)(20 + (uint32_t)40 * (320 - phase) / 80);
+                        setRGB(0, 0, v);
+                    } else {
+                        setRGB(0, 0, 12);
+                    }
+                }
                 break;
+
             case LED_SYNCING:
-
-                { uint8_t v = (uint8_t)(slowBlink ? 30 : 5);
-                  setRGB(v, 0, v); }
+                // Magenta chase: pulsing at medium speed, 1.5s period
+                {
+                    uint32_t phase = (now % 1500);
+                    uint8_t r, b;
+                    // Smooth triangle wave with quick bright peak
+                    if (phase < 500) {
+                        r = (uint8_t)(4 + (uint32_t)50 * phase / 500);
+                        b = (uint8_t)(4 + (uint32_t)50 * phase / 500);
+                    } else if (phase < 700) {
+                        // Hold near peak briefly
+                        r = (uint8_t)(40 + (uint32_t)14 * (700 - phase) / 200);
+                        b = r;
+                    } else {
+                        // Slow fade down
+                        uint32_t down = phase - 700;
+                        r = (uint8_t)(4 + (uint32_t)36 * (800 - (down > 800 ? 800 : down)) / 800);
+                        b = r;
+                    }
+                    setRGB(r, 0, b);
+                }
                 break;
+
             case LED_TX_FLASH:
                 setRGB(50, 50, 50);
                 break;
+
             case LED_BOOT:
-                { uint8_t v = (uint8_t)(breathe < 50 ? breathe : 100 - breathe);
-                  setRGB(0, v/2, v); }
+                // Blue breathing - smooth cycle, 3s period
+                {
+                    uint32_t phase = (now % 3000);
+                    uint8_t v;
+                    if (phase < 1500)
+                        v = (uint8_t)((uint32_t)50 * phase / 1500);
+                    else
+                        v = (uint8_t)((uint32_t)50 * (3000 - phase) / 1500);
+                    setRGB(0, v / 3, v);
+                }
                 break;
+
             case LED_ERROR:
-                { uint8_t v = (uint8_t)(fastBlink ? 60 : 0);
-                  setRGB(v, 0, 0); }
+                // Aggressive red double-flash strobe, 800ms period
+                {
+                    uint32_t phase = (now % 800);
+                    uint8_t v;
+                    if (phase < 60)
+                        v = 70;
+                    else if (phase < 120)
+                        v = 0;
+                    else if (phase < 180)
+                        v = 70;
+                    else
+                        v = 0;
+                    setRGB(v, 0, 0);
+                }
                 break;
         }
 #else
+        uint32_t slowBlink = (now / 800) % 2;
+        uint32_t fastBlink = (now / 200) % 2;
+        uint32_t heartbeat = (now % 2000);
+        bool hbOn = (heartbeat < 120) || (heartbeat >= 400 && heartbeat < 520);
         switch (_state) {
             case LED_OFF:
-            case LED_NO_WIFI:
                 digitalWrite(BUILTIN_LED_PIN, LOW);
+                break;
+            case LED_NO_WIFI:
+                // Pulsing blink
+                digitalWrite(BUILTIN_LED_PIN, ((now / 600) % 2) ? HIGH : LOW);
                 break;
             case LED_NO_PEERS:
                 digitalWrite(BUILTIN_LED_PIN, slowBlink ? HIGH : LOW);
                 break;
             case LED_CONNECTED:
+                // Heartbeat pattern
+                digitalWrite(BUILTIN_LED_PIN, hbOn ? HIGH : LOW);
+                break;
             case LED_VALIDATOR:
-                digitalWrite(BUILTIN_LED_PIN, HIGH);
+                // Faster heartbeat
+                { uint32_t vhb = (now % 1500);
+                  bool vOn = (vhb < 100) || (vhb >= 300 && vhb < 400);
+                  digitalWrite(BUILTIN_LED_PIN, vOn ? HIGH : LOW);
+                }
                 break;
             case LED_PRODUCING:
-                digitalWrite(BUILTIN_LED_PIN, fastBlink ? HIGH : LOW);
+                // Rapid strobe
+                digitalWrite(BUILTIN_LED_PIN, ((now / 100) % 2) ? HIGH : LOW);
                 break;
             case LED_SYNCING:
                 digitalWrite(BUILTIN_LED_PIN, _blinkOn ? HIGH : LOW);
                 break;
             case LED_ERROR:
-                digitalWrite(BUILTIN_LED_PIN, fastBlink ? HIGH : LOW);
+                // Double-flash
+                { uint32_t ep = (now % 800);
+                  bool eOn = (ep < 60) || (ep >= 120 && ep < 180);
+                  digitalWrite(BUILTIN_LED_PIN, eOn ? HIGH : LOW);
+                }
                 break;
             default:
                 break;
