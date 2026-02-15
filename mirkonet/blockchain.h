@@ -674,6 +674,18 @@ public:
 
         Serial0.println("[Sync] Replacing genesis with peer's genesis");
 
+        resetState();
+
+        chain[0] = peerGenesis;
+        chainLen = 1;
+
+        Serial0.printf("[Sync] New genesis hash: %s\n",
+                      peerGenesis.blockHash.toShort().c_str());
+        return true;
+    }
+
+    // Reset all state back to empty (preserving nothing)
+    void resetState() {
         memset(accounts, 0, sizeof(accounts));
         accountCount = 0;
         memset(contracts, 0, sizeof(contracts));
@@ -684,12 +696,36 @@ public:
         chainOffset = 0;
         checkpointCount = 0;
         finalizedCount = 0;
+    }
 
-        chain[0] = peerGenesis;
+    // Reset chain back to genesis, wiping blocks 1+ and rebuilding genesis state
+    // Used for same-genesis fork resolution
+    bool resetToGenesis(const NodeID& selfId) {
+        if (chainLen == 0) return false;
+
+        Block genesis = chain[0];  // save genesis block
+
+        Serial0.println("[Reorg] Resetting to genesis for chain reorg");
+
+        resetState();
+
+        chain[0] = genesis;
         chainLen = 1;
 
-        Serial0.printf("[Sync] New genesis hash: %s\n",
-                      peerGenesis.blockHash.toShort().c_str());
+        // Rebuild genesis state from the founder
+        setBalance(genesis.header.validator, GENESIS_PER_NODE);
+        staking.totalSupply = GENESIS_PER_NODE;
+        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
+        setBalance(genesis.header.validator, GENESIS_PER_NODE - stakeAmt);
+        staking.addGenesisValidator(genesis.header.validator, stakeAmt);
+
+        // Re-add ourselves if we're not the genesis founder
+        if (!(selfId == genesis.header.validator)) {
+            addGenesisNode(selfId);
+        }
+
+        Serial0.printf("[Reorg] Reset to genesis hash=%s, height=%d\n",
+                      genesis.blockHash.toShort().c_str(), height());
         return true;
     }
 

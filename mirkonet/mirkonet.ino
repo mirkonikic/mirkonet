@@ -715,7 +715,64 @@ void trySync() {
         return;
     }
     if (cmp == 0) {
-        Serial0.println("[Sync] Same genesis but prevHash mismatch?! Unexpected.");
+        // Same genesis but different block history — fork!
+        // Peer has a longer chain, so adopt theirs by resetting to genesis
+        // and re-downloading their chain.
+        Serial0.printf("[Sync] Same genesis, chain forked. Peer is ahead (%d > %d). Reorging...\n",
+                      peerHeight, ourHeight);
+
+        // g_scratchBlock2 already has peer's genesis from the download above
+        // Full reset: wipe everything and adopt peer's genesis
+        g_chain.resetState();
+        g_chain.chain[0] = g_scratchBlock2;
+        g_chain.chainLen = 1;
+
+        // Rebuild genesis state: founder gets initial allocation
+        NodeID founder = g_scratchBlock2.header.validator;
+        g_chain.setBalance(founder, GENESIS_PER_NODE);
+        g_chain.staking.totalSupply = GENESIS_PER_NODE;
+        uint32_t stakeAmt = GENESIS_PER_NODE / 2;
+        g_chain.setBalance(founder, GENESIS_PER_NODE - stakeAmt);
+        g_chain.staking.addGenesisValidator(founder, stakeAmt);
+
+        // Add ourselves and known peers as genesis nodes
+        if (!(g_selfId == founder))
+            g_chain.addGenesisNode(g_selfId);
+        for (int i = 0; i < g_net.peerCount; i++) {
+            if (g_net.peers[i].active && !(g_net.peers[i].nodeId == founder))
+                g_chain.addGenesisNode(g_net.peers[i].nodeId);
+        }
+        g_consensus.updateRole(g_chain.staking);
+
+        Serial0.printf("[Sync] Reorg: reset to genesis, rebuilding from peer...\n");
+
+        // Download and apply peer's chain from block #1 onwards.
+        // Use addBlock which validates prevHash+blockHash integrity
+        // but skips stateRoot/validator checks (acceptable during
+        // reorg since we're adopting a longer valid chain).
+        for (uint32_t i = 0; i < 10; i++) {
+            uint32_t idx = g_chain.height();
+            if (idx >= peerHeight) break;
+
+            if (!g_net.requestBlock(best->ip, idx, g_scratchBlock)) {
+                Serial0.printf("[Sync] Download failed at #%d\n", idx);
+                break;
+            }
+
+            prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
+
+            if (g_chain.addBlock(g_scratchBlock)) {
+                Serial0.printf("[Sync] Reorg applied #%d, height=%d\n",
+                              idx, g_chain.height());
+                g_consensus.updateRole(g_chain.staking);
+            } else {
+                Serial0.printf("[Sync] Reorg: block #%d failed validation\n", idx);
+                break;
+            }
+        }
+
+        Serial0.printf("[Sync] Reorg done. Height: %d (peer: %d)\n",
+                      g_chain.height(), peerHeight);
         return;
     }
 
