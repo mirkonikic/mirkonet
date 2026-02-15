@@ -31,7 +31,7 @@
 #define OP5_LOG       0x19  // LOG with topics: mod=topic count (0-4)
 #define OP5_EXT       0x1A  // Extended ops: mod selects sub-op
 #define OP5_XCALL     0x1B  // Contract calls: mod=0 CALL, mod=1 DELEGATECALL
-#define OP5_GPIO      0x1C  // GPIO: mod=0 WRITE, mod=1 READ, mod=2 MODE, mod=3 ADC, mod=4 DAC
+#define OP5_GPIO      0x1C  // GPIO: mod=0 WRITE, mod=1 READ, mod=2 MODE, mod=3 ADC
 // 0x1D-0x1F reserved
 
 // EXT sub-ops (mod field of OP5_EXT)

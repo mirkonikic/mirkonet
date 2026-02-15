@@ -199,10 +199,8 @@ String webHandleCommand(const String& line) {
         out += "  call relay 2 <pin>  Turn OFF relay\n";
         out += "  call relay 3 <pin>  Toggle relay\n";
         out += "  call relay 0 <pin>  Read state\n";
-        out += "  Opcodes: GPIOWRITE GPIOREAD GPIOMODE\n";
-        out += "           ADCREAD(12-bit) DACWRITE(8-bit)\n";
-        out += "  GPIO: 4,5,12-17 | DAC: 25,26\n";
-        out += "  ADC: 32-35 (also 4,12-15)\n";
+        out += "  Opcodes: GPIOWRITE GPIOREAD GPIOMODE ADCREAD\n";
+        out += "  GPIO: 1-21 | ADC: 1-10 (12-bit)\n";
         out += "-- System --\n";
         out += "  debug         Full diagnostics\n";
         out += "  checkpoints   Chain history\n";
@@ -630,9 +628,8 @@ void setup() {
                 { uint32_t v = analogRead(pin);
                   Serial0.printf("[ADC] pin %d = %u\n", pin, v);
                   return v; }
-            case 4: // DAC WRITE (8-bit: 0-255, ESP32 GPIO 25/26 only)
-                dacWrite(pin, (uint8_t)(value & 0xFF));
-                Serial0.printf("[DAC] pin %d -> %u\n", pin, value & 0xFF);
+            case 4: // DAC WRITE - not available on ESP32-S3
+                Serial0.printf("[DAC] not supported on ESP32-S3\n");
                 return 0;
         }
         return 0;
@@ -1542,10 +1539,8 @@ void handleSerial() {
         Serial0.println("  call relay 2 <pin>  Turn OFF relay");
         Serial0.println("  call relay 3 <pin>  Toggle relay");
         Serial0.println("  call relay 0 <pin>  Read state");
-        Serial0.println("  Opcodes: GPIOWRITE GPIOREAD GPIOMODE");
-        Serial0.println("           ADCREAD(12-bit) DACWRITE(8-bit)");
-        Serial0.println("  GPIO: 4,5,12-17 | DAC: 25,26");
-        Serial0.println("  ADC: 32-35 (also 4,12-15)");
+        Serial0.println("  Opcodes: GPIOWRITE GPIOREAD GPIOMODE ADCREAD");
+        Serial0.println("  GPIO: 1-21 | ADC: 1-10 (12-bit)");
         Serial0.println("-- System --");
         Serial0.println("  debug         Full system diagnostics");
         Serial0.println("  checkpoints   Cryptographic chain history");
@@ -2015,7 +2010,7 @@ tally:
 
     // --- relay: GPIO smart contract for controlling relays/LEDs ---
     // ARG 0: function (0=status, 1=on, 2=off, 3=toggle)
-    // ARG 1: GPIO pin number (must be in allowlist: 4,5,12,13,14,15,16,17)
+    // ARG 1: GPIO pin number (must be in allowlist: 1-21)
     // Storage slot 0+pin stores the current state for that pin.
     {
         String src = R"(
