@@ -47,6 +47,433 @@ Transaction buildTx(TxType type) {
     return tx;
 }
 
+// Forward declarations
+bool findNodeByShort(const String& shortId, NodeID& out);
+void deployExamples();
+
+// ==================== Web Dashboard Callbacks ====================
+
+String webGetStats() {
+    uint32_t staked = 0;
+    const StakeInfo* si = g_chain.staking.findStake(g_selfId);
+    if (si) staked = si->stakedAmount;
+
+    String j = "{";
+    j += "\"nodeId\":\"" + g_selfId.toString() + "\",";
+    j += "\"shortId\":\"" + g_selfId.toShortStr() + "\",";
+    j += "\"role\":\"" + String(roleName(g_consensus.selfRole)) + "\",";
+    j += "\"staConnected\":" + String(g_wifi.staConnected ? "true" : "false") + ",";
+    j += "\"ssid\":\"" + g_wifi.connectedSSID + "\",";
+    j += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+    j += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+    j += "\"height\":" + String(g_chain.height()) + ",";
+    j += "\"epoch\":" + String(g_chain.currentEpoch()) + ",";
+    j += "\"balance\":" + String(g_chain.getBalance(g_selfId)) + ",";
+    j += "\"staked\":" + String(staked) + ",";
+    j += "\"peers\":" + String(g_net.countAlive()) + ",";
+    j += "\"validators\":" + String(g_chain.staking.activeCount) + ",";
+    j += "\"contracts\":" + String(g_chain.contractCount) + ",";
+    j += "\"mempool\":" + String(g_chain.mempoolSize) + ",";
+    j += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
+    j += "\"uptime\":" + String(millis() / 1000);
+    j += "}";
+    return j;
+}
+
+String webGetPeers() {
+    String j = "[";
+    bool first = true;
+    for (int i = 0; i < g_net.peerCount; i++) {
+        PeerInfo& p = g_net.peers[i];
+        if (!p.active) continue;
+        if (!first) j += ",";
+        first = false;
+        j += "{\"shortId\":\"" + p.nodeId.toShortStr() + "\",";
+        j += "\"id\":\"" + p.nodeId.toString() + "\",";
+        j += "\"ip\":\"" + p.ip.toString() + "\",";
+        j += "\"height\":" + String(p.chainHeight) + ",";
+        j += "\"role\":\"" + String(roleName(p.role)) + "\",";
+        j += "\"alive\":" + String(p.isAlive() ? "true" : "false") + "}";
+    }
+    j += "]";
+    return j;
+}
+
+String webGetContracts() {
+    String j = "[";
+    bool first = true;
+    for (int i = 0; i < g_chain.contractCount; i++) {
+        Contract& c = g_chain.contracts[i];
+        if (!c.active) continue;
+        if (!first) j += ",";
+        first = false;
+        j += "{\"name\":\"" + String(c.name) + "\",";
+        j += "\"addr\":\"" + c.addr.toHex() + "\",";
+        j += "\"codeLen\":" + String(c.codeLen) + ",";
+        j += "\"deployer\":\"" + c.deployer.toShortStr() + "\",";
+        j += "\"hasCode\":" + String(c.hasCode ? "true" : "false") + ",";
+        j += "\"balance\":" + String(c.balance) + ",";
+        j += "\"storage\":[";
+        bool sfirst = true;
+        for (int s = 0; s < MVM_MAX_STORAGE; s++) {
+            if (!c.storage[s].used) continue;
+            if (!sfirst) j += ",";
+            sfirst = false;
+            j += "{\"key\":" + String(c.storage[s].key) + ",\"value\":" + String(c.storage[s].value) + "}";
+        }
+        j += "]}";
+    }
+    j += "]";
+    return j;
+}
+
+bool webDeploy(const String& name, const String& asmSource, String& outMsg) {
+    auto r = MVMAssembler::assemble(asmSource);
+    if (!r.ok) {
+        outMsg = "Assembly error: " + r.error;
+        return false;
+    }
+
+    g_deployCache.store(name.c_str(), r.code, r.len);
+
+    Transaction tx = buildTx(TxType::DEPLOY);
+    tx.to = ZERO_NODE;
+    strncpy(tx.data, name.c_str(), 15);
+    tx.gasLimit = r.len * DEPLOY_GAS_PER_BYTE + 1000;
+
+    g_chain.addToMempool(tx);
+    g_net.broadcastTx(tx);
+    g_led.flashDeploy();
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "Deploy '%s' submitted (%d bytes, gasLimit=%u, next block)",
+             name.c_str(), r.len, tx.gasLimit);
+    outMsg = String(buf);
+    Serial0.printf("[Web] %s\n", buf);
+    return true;
+}
+
+String webHandleCommand(const String& line) {
+    String out = "";
+    String cmd = line, arg1 = "", arg2 = "";
+    int sp = line.indexOf(' ');
+    if (sp > 0) {
+        cmd = line.substring(0, sp);
+        arg1 = line.substring(sp+1); arg1.trim();
+        int sp2 = arg1.indexOf(' ');
+        if (sp2 > 0) {
+            arg2 = arg1.substring(sp2+1); arg2.trim();
+            arg1 = arg1.substring(0, sp2);
+        }
+    }
+    cmd.toLowerCase();
+
+    if (cmd == "help") {
+        out += "====== MirkoNet PoS Commands ======\n";
+        out += "-- Info --\n";
+        out += "  status        Node overview\n";
+        out += "  peers         Connected peers\n";
+        out += "  chain         Blockchain\n";
+        out += "  accounts      All accounts + balances\n";
+        out += "  economy       Economic stats\n";
+        out += "  heap          Free memory\n";
+        out += "-- PoS --\n";
+        out += "  validators    Active validator set\n";
+        out += "  candidates    All staking candidates\n";
+        out += "  faucet        Request " + String(FAUCET_AMOUNT) + " tokens\n";
+        out += "  stake <amt>   Stake tokens (min " + String(MIN_STAKE) + ")\n";
+        out += "  unstake <amt> Begin unstake cooldown\n";
+        out += "  claim         Claim unstaked tokens\n";
+        out += "-- Tokens --\n";
+        out += "  balance       Your balance\n";
+        out += "  transfer <id> <amt>  Send tokens\n";
+        out += "-- Contracts --\n";
+        out += "  call <n> [a]  Execute contract\n";
+        out += "  contracts     List contracts\n";
+        out += "  storage <n>   Inspect storage\n";
+        out += "  example       Deploy demos\n";
+        out += "-- System --\n";
+        out += "  debug         Full diagnostics\n";
+        out += "  checkpoints   Chain history\n";
+        out += "  wifistatus    WiFi info\n";
+        out += "  wifireset     Clear WiFi, reboot\n";
+        out += "====================================\n";
+    }
+    else if (cmd == "status") {
+        uint32_t staked = 0;
+        const StakeInfo* si = g_chain.staking.findStake(g_selfId);
+        if (si) staked = si->stakedAmount;
+        out += "====== MirkoNet Status ======\n";
+        out += "  Node:       " + g_selfId.toString() + "\n";
+        out += "  Short ID:   " + g_selfId.toShortStr() + "\n";
+        out += "  IP:         " + WiFi.localIP().toString() + "\n";
+        char rbuf[32]; snprintf(rbuf, sizeof(rbuf), "  Role:       %s\n", roleName(g_consensus.selfRole)); out += rbuf;
+        out += "  Chain:      " + String(g_chain.height()) + " blocks\n";
+        out += "  Epoch:      " + String(g_chain.currentEpoch()) + "\n";
+        out += "  Balance:    " + String(g_chain.getBalance(g_selfId)) + "\n";
+        out += "  Staked:     " + String(staked) + "\n";
+        out += "  Peers:      " + String(g_net.countAlive()) + "\n";
+        out += "  Validators: " + String(g_chain.staking.activeCount) + "\n";
+        out += "  Slot:       " + String(g_consensus.getCurrentSlot()) + "\n";
+        out += "  Mempool:    " + String(g_chain.mempoolSize) + "\n";
+        char hbuf[32]; snprintf(hbuf, sizeof(hbuf), "  Heap:       %d bytes\n", ESP.getFreeHeap()); out += hbuf;
+        out += "=============================\n";
+    }
+    else if (cmd == "peers") {
+        out += "====== Peers ======\n";
+        for (int i = 0; i < g_net.peerCount; i++) {
+            PeerInfo& p = g_net.peers[i];
+            if (!p.active) continue;
+            char pbuf[128];
+            snprintf(pbuf, sizeof(pbuf), "  %s @ %s  h=%d  %s  %s\n",
+                     p.nodeId.toShortStr().c_str(), p.ip.toString().c_str(),
+                     p.chainHeight, roleName(p.role),
+                     p.isAlive() ? "alive" : "lost");
+            out += pbuf;
+        }
+        if (g_net.peerCount == 0) out += "  (none)\n";
+        out += "===================\n";
+    }
+    else if (cmd == "chain") {
+        out += "====== Blockchain ======\n";
+        char cbuf[64];
+        snprintf(cbuf, sizeof(cbuf), "  Height: %d  In-memory: %d  Offset: %d\n",
+                 g_chain.height(), g_chain.blocksInMemory(), g_chain.chainOffset);
+        out += cbuf;
+        for (uint32_t i = 0; i < g_chain.blocksInMemory(); i++) {
+            Block& b = g_chain.chain[i];
+            snprintf(cbuf, sizeof(cbuf), "  #%d  txns=%d  by=%s  reward=%d\n",
+                     b.header.index, b.header.txCount,
+                     b.header.validator.toShortStr().c_str(), b.header.reward);
+            out += cbuf;
+        }
+        out += "========================\n";
+    }
+    else if (cmd == "accounts") {
+        out += "====== Accounts ======\n";
+        for (int i = 0; i < g_chain.accountCount; i++) {
+            if (!g_chain.accounts[i].used) continue;
+            char abuf[80];
+            snprintf(abuf, sizeof(abuf), "  %s  bal=%u  nonce=%u\n",
+                     g_chain.accounts[i].owner.toShortStr().c_str(),
+                     g_chain.accounts[i].balance,
+                     g_chain.accounts[i].nonce);
+            out += abuf;
+        }
+        out += "======================\n";
+    }
+    else if (cmd == "economy") {
+        out += "====== Economy ======\n";
+        char ebuf[128];
+        snprintf(ebuf, sizeof(ebuf), "  Total supply:  %u tokens\n", g_chain.staking.totalSupply); out += ebuf;
+        snprintf(ebuf, sizeof(ebuf), "  Total staked:  %u tokens (%.1f%%)\n",
+                 g_chain.staking.totalStaked,
+                 g_chain.staking.totalSupply > 0 ?
+                 100.0*g_chain.staking.totalStaked/g_chain.staking.totalSupply : 0); out += ebuf;
+        snprintf(ebuf, sizeof(ebuf), "  Block reward:  %u tokens/block\n", BLOCK_REWARD); out += ebuf;
+        snprintf(ebuf, sizeof(ebuf), "  Min stake:     %u tokens\n", MIN_STAKE); out += ebuf;
+        snprintf(ebuf, sizeof(ebuf), "  Faucet:        %u tokens (cooldown %ds)\n", FAUCET_AMOUNT, FAUCET_COOLDOWN/1000); out += ebuf;
+        snprintf(ebuf, sizeof(ebuf), "  Accounts:      %d\n", g_chain.accountCount); out += ebuf;
+        out += "=====================\n";
+    }
+    else if (cmd == "heap") {
+        char hbuf[64];
+        snprintf(hbuf, sizeof(hbuf), "Heap: %d bytes (min: %d)\n", ESP.getFreeHeap(), ESP.getMinFreeHeap());
+        out += hbuf;
+    }
+    else if (cmd == "balance") {
+        uint32_t bal = g_chain.getBalance(g_selfId);
+        const StakeInfo* si = g_chain.staking.findStake(g_selfId);
+        char bbuf[80];
+        snprintf(bbuf, sizeof(bbuf), "Available: %u tokens\n", bal); out += bbuf;
+        if (si) {
+            snprintf(bbuf, sizeof(bbuf), "Staked:    %u tokens\n", si->stakedAmount); out += bbuf;
+            if (si->unstakingAmount > 0) {
+                snprintf(bbuf, sizeof(bbuf), "Unstaking: %u tokens\n", si->unstakingAmount); out += bbuf;
+            }
+            snprintf(bbuf, sizeof(bbuf), "Total:     %u tokens\n", bal + si->stakedAmount + si->unstakingAmount); out += bbuf;
+        }
+    }
+    else if (cmd == "validators" || cmd == "candidates") {
+        out += "====== Staking ======\n";
+        for (int i = 0; i < g_chain.staking.stakeCount; i++) {
+            StakeInfo& si = g_chain.staking.stakes[i];
+            if (!si.used) continue;
+            char sbuf[128];
+            snprintf(sbuf, sizeof(sbuf), "  %s  staked=%u  candidate=%s  jailed=%s\n",
+                     si.staker.toShortStr().c_str(), si.stakedAmount,
+                     si.isCandidate ? "yes" : "no",
+                     si.jailed ? "yes" : "no");
+            out += sbuf;
+        }
+        out += "=====================\n";
+    }
+    else if (cmd == "contracts") {
+        out += "====== Contracts ======\n";
+        for (int i = 0; i < g_chain.contractCount; i++) {
+            Contract& c = g_chain.contracts[i];
+            if (!c.active) continue;
+            char cbuf[128];
+            snprintf(cbuf, sizeof(cbuf), "  %s @ %s | %dB | by %s | %s\n",
+                     c.name, c.addr.toHex().c_str(), c.codeLen,
+                     c.deployer.toShortStr().c_str(),
+                     c.hasCode ? "LOCAL" : "REMOTE");
+            out += cbuf;
+        }
+        if (g_chain.contractCount == 0) out += "  (none)\n";
+        out += "=======================\n";
+    }
+    else if (cmd == "storage") {
+        Contract* c = g_chain.findContract(arg1.c_str());
+        if (c) {
+            out += "Storage: " + String(c->name) + "\n";
+            for (int i = 0; i < MVM_MAX_STORAGE; i++) {
+                if (c->storage[i].used) {
+                    char sbuf[40];
+                    snprintf(sbuf, sizeof(sbuf), "  [%u] = %u\n", c->storage[i].key, c->storage[i].value);
+                    out += sbuf;
+                }
+            }
+        } else out += "Not found: " + arg1 + "\n";
+    }
+    else if (cmd == "debug") {
+        char dbuf[128];
+        out += "====== Debug Info ======\n";
+        snprintf(dbuf, sizeof(dbuf), "  Heap free:     %d bytes\n", ESP.getFreeHeap()); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Heap min:      %d bytes\n", ESP.getMinFreeHeap()); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  CPU freq:      %d MHz\n", ESP.getCpuFreqMHz()); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Chip:          %s (%d cores)\n", ESP.getChipModel(), ESP.getChipCores()); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Flash:         %d KB\n", ESP.getFlashChipSize() / 1024); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Uptime:        %d seconds\n", millis() / 1000); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  WiFi:          %s\n", WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected"); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Blocks:        %d (in-mem: %d/%d)\n", g_chain.height(), g_chain.blocksInMemory(), MAX_BLOCKS); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Contracts:     %d/%d\n", g_chain.contractCount, MAX_CONTRACTS); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Accounts:      %d/%d\n", g_chain.accountCount, MAX_ACCOUNTS); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Mempool:       %d/%d\n", g_chain.mempoolSize, MAX_PENDING_TX); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Peers:         %d/%d (alive: %d)\n", g_net.peerCount, MAX_PEERS, g_net.countAlive()); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Candidates:    %d/%d\n", g_chain.staking.stakeCount, MAX_CANDIDATES); out += dbuf;
+        snprintf(dbuf, sizeof(dbuf), "  Validators:    %d/%d\n", g_chain.staking.activeCount, MAX_VALIDATORS); out += dbuf;
+        out += "========================\n";
+    }
+    else if (cmd == "wifistatus") {
+        out += "====== WiFi Status ======\n";
+        out += "  AP Name:   " + g_wifi.apName + "\n";
+        out += "  AP IP:     " + WiFi.softAPIP().toString() + "\n";
+        char wbuf[64];
+        snprintf(wbuf, sizeof(wbuf), "  AP clients: %d\n", WiFi.softAPgetStationNum()); out += wbuf;
+        if (g_wifi.staConnected) {
+            out += "  STA:       CONNECTED\n";
+            out += "  STA SSID:  " + g_wifi.connectedSSID + "\n";
+            out += "  STA IP:    " + WiFi.localIP().toString() + "\n";
+            snprintf(wbuf, sizeof(wbuf), "  STA RSSI:  %d dBm\n", WiFi.RSSI()); out += wbuf;
+        } else {
+            out += "  STA:       NOT CONNECTED\n";
+        }
+        out += "=========================\n";
+    }
+    else if (cmd == "faucet") {
+        Transaction tx = buildTx(TxType::FAUCET);
+        g_chain.addToMempool(tx);
+        g_net.broadcastTx(tx);
+        out += "Faucet request submitted (next block)\n";
+    }
+    else if (cmd == "stake") {
+        if (arg1.length() == 0) { out += "Usage: stake <amount>\n"; }
+        else {
+            Transaction tx = buildTx(TxType::STAKE);
+            tx.value = arg1.toInt();
+            g_chain.addToMempool(tx);
+            g_net.broadcastTx(tx);
+            g_led.flashStake();
+            char sbuf[64]; snprintf(sbuf, sizeof(sbuf), "Stake %u submitted (next block)\n", tx.value); out += sbuf;
+        }
+    }
+    else if (cmd == "unstake") {
+        if (arg1.length() == 0) { out += "Usage: unstake <amount>\n"; }
+        else {
+            Transaction tx = buildTx(TxType::UNSTAKE);
+            tx.value = arg1.toInt();
+            g_chain.addToMempool(tx);
+            g_net.broadcastTx(tx);
+            out += "Unstake submitted (next block)\n";
+        }
+    }
+    else if (cmd == "claim") {
+        Transaction tx = buildTx(TxType::CLAIM);
+        g_chain.addToMempool(tx);
+        g_net.broadcastTx(tx);
+        out += "Claim submitted (next block)\n";
+    }
+    else if (cmd == "transfer") {
+        if (arg1.length() == 0 || arg2.length() == 0) {
+            out += "Usage: transfer <6-char-hex-id> <amount>\n";
+        } else {
+            NodeID target;
+            if (!findNodeByShort(arg1, target)) {
+                out += "Node not found: " + arg1 + "\n";
+            } else {
+                Transaction tx = buildTx(TxType::TRANSFER);
+                tx.to = target;
+                tx.value = arg2.toInt();
+                g_chain.addToMempool(tx);
+                g_net.broadcastTx(tx);
+                char tbuf[80]; snprintf(tbuf, sizeof(tbuf), "Transfer %u to %s submitted (next block)\n",
+                                        tx.value, target.toShortStr().c_str()); out += tbuf;
+            }
+        }
+    }
+    else if (cmd == "call") {
+        if (arg1.length() == 0) { out += "Usage: call <name> [args]\n"; }
+        else {
+            Transaction tx = buildTx(TxType::CALL);
+            strncpy(tx.data, arg1.c_str(), 15);
+            Contract* ct = g_chain.findContract(arg1.c_str());
+            if (!ct) { out += "Contract not found: " + arg1 + "\n"; }
+            else {
+                tx.to = ct->deployer;
+                if (arg2.length() > 0) {
+                    String args = arg2;
+                    while (args.length() > 0 && tx.argCount < MVM_MAX_ARGS) {
+                        int s = args.indexOf(' ');
+                        String a = (s>0) ? args.substring(0,s) : args;
+                        tx.args[tx.argCount++] = a.toInt();
+                        args = (s>0) ? args.substring(s+1) : "";
+                        args.trim();
+                    }
+                }
+                g_chain.addToMempool(tx);
+                g_net.broadcastTx(tx);
+                g_led.flashCall();
+                out += "Call '" + arg1 + "' submitted (gasLimit=" + String(tx.gasLimit) + ", next block)\n";
+            }
+        }
+    }
+    else if (cmd == "checkpoints") {
+        out += "====== Checkpoints ======\n";
+        for (int i = 0; i < g_chain.checkpointCount; i++) {
+            if (!g_chain.checkpoints[i].used) continue;
+            char cpbuf[128];
+            snprintf(cpbuf, sizeof(cpbuf), "  [%d..%d] hash=%s\n",
+                     g_chain.checkpoints[i].fromBlock, g_chain.checkpoints[i].toBlock,
+                     g_chain.checkpoints[i].lastBlockHash.toShort().c_str());
+            out += cpbuf;
+        }
+        if (g_chain.checkpointCount == 0) out += "  (none)\n";
+        out += "=========================\n";
+    }
+    else if (cmd == "wifireset") {
+        out += "Resetting WiFi credentials and rebooting...\n";
+        WiFiManager::resetCredentials();
+    }
+    else if (cmd == "example") {
+        out += "Use the serial console for 'example' (deploys demo contracts)\n";
+    }
+    else {
+        out += "Unknown command. Type 'help'.\n";
+    }
+
+    return out;
+}
 
 void setup() {
     Serial0.begin(115200);
@@ -113,6 +540,14 @@ void setup() {
                   UDP_DISCOVERY_PORT, UDP_GOSSIP_PORT, TCP_SYNC_PORT);
     Serial0.printf("[Init]   Heap after net: %d\n", ESP.getFreeHeap());
 
+
+    // Wire up web dashboard callbacks
+    g_wifi.onStats     = webGetStats;
+    g_wifi.onPeers     = webGetPeers;
+    g_wifi.onContracts = webGetContracts;
+    g_wifi.onCommand   = webHandleCommand;
+    g_wifi.onDeploy    = webDeploy;
+    Serial0.println("[Init] Web dashboard callbacks registered");
 
     Serial0.println("\n======== INIT COMPLETE ========");
     Serial0.printf("  Node:       %s\n", g_selfId.toString().c_str());
