@@ -142,6 +142,16 @@ public:
 
         if (activeCount < MAX_VALIDATORS) {
             activeSet[activeCount++] = who;
+            // Sort active set by hash32 for deterministic slot ordering
+            for (int i = 0; i < activeCount - 1; i++) {
+                for (int j = i + 1; j < activeCount; j++) {
+                    if (activeSet[j].hash32() < activeSet[i].hash32()) {
+                        NodeID tmp = activeSet[i];
+                        activeSet[i] = activeSet[j];
+                        activeSet[j] = tmp;
+                    }
+                }
+            }
         }
     }
 
