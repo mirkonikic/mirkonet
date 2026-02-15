@@ -69,14 +69,99 @@ public:
 #endif
     }
 
-    void flashDeploy()  { flashColor(0, 80, 40, 400); }
-    void flashCall()    { flashColor(0, 40, 80, 200); }
-    void flashStake()   { flashColor(60, 60, 0, 300); }
-    void flashBlock()   { flashColor(0, 60, 0, 300); }
-    void flashReject()  { flashColor(80, 0, 0, 400); }
-    void flashEpoch()   { flashColor(60, 0, 60, 500); }
-    void flashPeer()    { flashColor(0, 50, 30, 250); }   // Teal flash for new peer
-    void flashSync()    { flashColor(40, 0, 60, 200); }   // Purple flash for sync progress
+    // --- Block-level events ---
+    void flashBlock()   { flashColor(0, 60, 0, 300); }    // Green: block accepted
+    void flashReject()  { flashColor(80, 0, 0, 400); }    // Red: block rejected
+    void flashEpoch()   { flashColor(60, 0, 60, 500); }   // Purple: epoch transition
+    void flashSync()    { flashColor(40, 0, 60, 200); }   // Purple: sync progress
+    void flashPeer()    { flashColor(0, 50, 30, 250); }   // Teal: new peer joined
+    void flashProduced(){ flashColor(20, 20, 80, 500); }  // Blue-white: we produced a block
+
+    // --- Validation feedback (green family) ---
+    void flashValidation()   { flashColor(0, 70, 0, 250); }    // Bright green: generic validation pass
+    void flashStateVerified(){ flashColor(0, 80, 20, 300); }   // Green-lime: state root verified
+    void flashGenesisOk()    { flashColor(0, 60, 30, 400); }   // Green-teal: genesis sync OK
+
+    // --- Rejection feedback (red family) ---
+    void flashTxFail()       { flashColor(80, 10, 0, 300); }   // Red-orange: tx execution failed
+    void flashHashMismatch() { flashColor(80, 0, 20, 350); }   // Red-pink: hash/state mismatch
+    void flashSlashDetected(){ flashColor(80, 0, 0, 600); }    // Deep red: slashing event
+
+    // --- Transaction type flashes (white base + type-specific) ---
+    void flashTxReceived()   { flashColor(50, 50, 50, 150); }  // White: any tx received via gossip
+    void flashTransfer()     { flashColor(70, 70, 70, 250); }  // Bright white: token transfer
+    void flashDeploy()       { flashColor(0, 80, 40, 400); }   // Green-cyan: contract deploy
+    void flashCall()         { flashColor(0, 40, 80, 200); }   // Blue: contract call
+    void flashStake()        { flashColor(60, 60, 0, 300); }   // Yellow: staking
+    void flashUnstake()      { flashColor(70, 35, 0, 300); }   // Orange: unstaking
+    void flashClaim()        { flashColor(0, 60, 60, 250); }   // Cyan: claim tokens
+    void flashFaucet()       { flashColor(60, 0, 50, 250); }   // Magenta: faucet request
+    void flashData()         { flashColor(40, 40, 60, 200); }  // Blue-grey: data tx
+
+    // --- MVM opcode category flashes (called after VM execution) ---
+    void flashOpcodeArith()  { flashColor(70, 40, 0, 200); }   // Orange: arithmetic (ADD/SUB/MUL/DIV/MOD)
+    void flashOpcodeLogic()  { flashColor(0, 60, 60, 200); }   // Cyan: logic/bitwise (AND/OR/XOR/NOT/CMP)
+    void flashOpcodeStack()  { flashColor(20, 20, 70, 200); }  // Blue: stack ops (PUSH/POP/DUP/SWAP)
+    void flashOpcodeStorage(){ flashColor(60, 60, 0, 250); }   // Yellow: storage (SLOAD/SSTORE)
+    void flashOpcodeFlow()   { flashColor(60, 0, 60, 200); }   // Magenta: control flow (JMP/HALT)
+    void flashOpcodeCrypto() { flashColor(50, 0, 70, 250); }   // Purple: crypto (SHA3)
+    void flashOpcodeContext(){ flashColor(0, 50, 40, 200); }   // Teal: context (ARG/BALANCE/CALLVALUE)
+    void flashOpcodeEvent()  { flashColor(70, 20, 40, 200); }  // Pink: events (EMIT/LOG)
+    void flashOpcodeCall()   { flashColor(10, 10, 80, 250); }  // Deep blue: inter-contract (XCALL)
+
+    // --- VM execution result flash ---
+    void flashVMStatus(uint8_t vmStatus) {
+        switch (vmStatus) {
+            case 1:  flashValidation(); break;      // VM_HALTED (success) -> green
+            case 2:  flashColor(80, 40, 0, 300); break; // VM_REVERTED -> orange-red
+            case 3:  // VM_ERR_STACK_OVER
+            case 4:  flashColor(70, 30, 0, 300); break; // VM_ERR_STACK_UNDER -> orange
+            case 5:  flashColor(70, 70, 0, 350); break; // VM_ERR_OUT_OF_GAS -> yellow
+            case 6:  flashColor(60, 0, 60, 300); break; // VM_ERR_BAD_JUMP -> magenta
+            case 7:  flashColor(80, 0, 30, 300); break; // VM_ERR_CODE_BOUNDS -> red-pink
+            case 8:  flashColor(80, 0, 0, 300); break;  // VM_ERR_DIV_ZERO -> red
+            case 9:  flashColor(70, 50, 0, 300); break; // VM_ERR_STORAGE_FULL -> amber
+            case 10: flashColor(60, 20, 0, 300); break; // VM_ERR_BAD_ARG -> dark orange
+            case 11: flashColor(50, 0, 50, 300); break; // VM_ERR_CALL_DEPTH -> purple
+            case 12: flashColor(60, 0, 30, 300); break; // VM_ERR_CALL_FAIL -> dark red-pink
+            case 13: flashColor(70, 20, 0, 300); break; // VM_ERR_MEM_BOUNDS -> orange
+            default: flashTxFail(); break;
+        }
+    }
+
+    // --- Flash for transaction type ---
+    void flashForTxType(uint8_t txType) {
+        switch (txType) {
+            case 0x01: flashData(); break;       // DATA
+            case 0x02: flashDeploy(); break;     // DEPLOY
+            case 0x03: flashCall(); break;       // CALL
+            case 0x04: flashTransfer(); break;   // TRANSFER
+            case 0x10: flashStake(); break;      // STAKE
+            case 0x11: flashUnstake(); break;    // UNSTAKE
+            case 0x14: flashClaim(); break;      // CLAIM
+            case 0x15: flashFaucet(); break;     // FAUCET
+            default:   flashTxReceived(); break;
+        }
+    }
+
+    // --- Flash for MVM opcode category ---
+    void flashForOpcode(uint8_t op) {
+        // op is the 5-bit opcode (already decoded)
+        if (op <= 0x00)      flashOpcodeFlow();    // HALT
+        else if (op <= 0x04) flashOpcodeStack();   // PUSH/POP/DUP/SWAP
+        else if (op <= 0x09) flashOpcodeArith();   // ADD/SUB/MUL/DIV/MOD
+        else if (op <= 0x0E) flashOpcodeLogic();   // AND/OR/XOR/SHL/SHR
+        else if (op <= 0x10) flashOpcodeLogic();   // CMP/NOT
+        else if (op == 0x11) flashOpcodeFlow();    // JMP
+        else if (op <= 0x13) flashOpcodeStorage(); // SLOAD/SSTORE
+        else if (op == 0x14) flashOpcodeEvent();   // EMIT
+        else if (op <= 0x17) flashOpcodeContext();  // ARG/BALANCE/CALLVALUE
+        else if (op == 0x18) flashOpcodeCrypto();  // SHA3
+        else if (op == 0x19) flashOpcodeEvent();   // LOG
+        else if (op == 0x1A) flashOpcodeContext();  // EXT (context ops)
+        else if (op == 0x1B) flashOpcodeCall();    // XCALL
+        else                 flashTxFail();        // unknown
+    }
 
     void bootSequence() {
 #if HAS_RGB_LED

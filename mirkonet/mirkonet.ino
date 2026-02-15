@@ -375,6 +375,7 @@ String webHandleCommand(const String& line) {
         Transaction tx = buildTx(TxType::FAUCET);
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashFaucet();
         out += "Faucet request submitted (next block)\n";
     }
     else if (cmd == "stake") {
@@ -395,6 +396,7 @@ String webHandleCommand(const String& line) {
             tx.value = arg1.toInt();
             g_chain.addToMempool(tx);
             g_net.broadcastTx(tx);
+            g_led.flashUnstake();
             out += "Unstake submitted (next block)\n";
         }
     }
@@ -402,6 +404,7 @@ String webHandleCommand(const String& line) {
         Transaction tx = buildTx(TxType::CLAIM);
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashClaim();
         out += "Claim submitted (next block)\n";
     }
     else if (cmd == "transfer") {
@@ -411,12 +414,14 @@ String webHandleCommand(const String& line) {
             NodeID target;
             if (!findNodeByShort(arg1, target)) {
                 out += "Node not found: " + arg1 + "\n";
+                g_led.flashTxFail();
             } else {
                 Transaction tx = buildTx(TxType::TRANSFER);
                 tx.to = target;
                 tx.value = arg2.toInt();
                 g_chain.addToMempool(tx);
                 g_net.broadcastTx(tx);
+                g_led.flashTransfer();
                 char tbuf[80]; snprintf(tbuf, sizeof(tbuf), "Transfer %u to %s submitted (next block)\n",
                                         tx.value, target.toShortStr().c_str()); out += tbuf;
             }
@@ -548,6 +553,17 @@ void setup() {
     g_wifi.onCommand   = webHandleCommand;
     g_wifi.onDeploy    = webDeploy;
     Serial0.println("[Init] Web dashboard callbacks registered");
+
+    // Wire up blockchain LED callback for validation-stage feedback
+    g_blockchainLedCb = [](uint8_t event, uint8_t param) {
+        switch (event) {
+            case 0: g_led.flashStateVerified(); break;  // Validation pass
+            case 1: g_led.flashReject(); break;         // Rejection
+            case 2: g_led.flashForTxType(param); break; // TX success -> flash tx type color
+            case 3: g_led.flashTxFail(); break;         // TX failure -> red
+        }
+    };
+    Serial0.println("[Init] Blockchain LED callback registered");
 
     Serial0.println("\n======== INIT COMPLETE ========");
     Serial0.printf("  Node:       %s\n", g_selfId.toString().c_str());
@@ -730,11 +746,14 @@ void handleDiscovery(const P2PNetwork::RecvMsg& msg) {
                     Serial0.println("[Discovery] Peer has lower genesis hash — adopting");
                     g_chain.adoptGenesis(g_scratchBlock2, g_selfId);
                     g_consensus.updateRole(g_chain.staking);
+                    g_led.flashGenesisOk();
                 } else {
                     Serial0.println("[Discovery] Our genesis hash is lower — we win, peer should adopt");
+                    g_led.flashValidation();
                 }
             } else {
                 Serial0.println("[Discovery] Same genesis! Already in sync.");
+                g_led.flashGenesisOk();
             }
         }
     }
@@ -760,7 +779,7 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
         if (g_chain.addToMempool(tx)) {
             Serial0.println("[Gossip] TX from " + msg.sender.toShortStr() +
                            " type=" + String((int)tx.type));
-            g_led.flash(150);
+            g_led.flashForTxType((uint8_t)tx.type);
         }
         break;
     }
@@ -804,6 +823,16 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
                 Serial0.println();
             }
 
+            // Flash LED for each tx type in the accepted block
+            // For CALL txns, flash the dominant opcode category instead
+            for (int i = 0; i < g_scratchBlock.header.txCount; i++) {
+                if (g_scratchBlock.txns[i].type == TxType::CALL) {
+                    g_led.flashForOpcode(g_chain.vm.dominantOpcode());
+                } else {
+                    g_led.flashForTxType((uint8_t)g_scratchBlock.txns[i].type);
+                }
+            }
+
             // Re-gossip CONTRACT_INFO for any deployed contracts in this block
             // so the info propagates to nodes that may not have heard the original
             for (int i = 0; i < g_scratchBlock.header.txCount; i++) {
@@ -818,10 +847,12 @@ void handleGossip(const P2PNetwork::RecvMsg& msg) {
 
             g_consensus.updateRole(g_chain.staking);
             g_consensus.lastProducedSlot = g_scratchBlock.header.slot;
+
+            // LED feedback: green for accepted block, purple for epoch
             if (g_chain.height() % EPOCH_LENGTH == 0)
                 g_led.flashEpoch();
             else
-                g_led.flashBlock();
+                g_led.flashValidation();
         } else {
             const char* reasons[] = {
                 "OK", "wrong index", "prevHash mismatch", "bad hash",
@@ -1086,7 +1117,7 @@ void checkBlockProduction() {
     prefetchCodeForTxns(txns, txCount);
 
     if (g_chain.createBlock(g_selfId, slot, txns, txCount)) {
-        // Print structured logs
+        // Print structured logs and flash LED per opcode category for CALL txns
         for (uint8_t l = 0; l < g_chain.vm.logCount(); l++) {
             const MVMLog& log = g_chain.vm.log(l);
             Serial0.printf("    Log[%d] data=%u topics=%d", l, log.data, log.topicCount);
@@ -1095,10 +1126,18 @@ void checkBlockProduction() {
             Serial0.println();
         }
 
-        g_net.broadcastFullBlock(g_chain.lastBlock());
+        // Flash opcode category for the dominant opcode in CALL txns
+        const Block& produced = g_chain.lastBlock();
+        for (int i = 0; i < produced.header.txCount; i++) {
+            if (produced.txns[i].type == TxType::CALL) {
+                // Flash the dominant opcode category color
+                g_led.flashForOpcode(g_chain.vm.dominantOpcode());
+            }
+        }
+
+        g_net.broadcastFullBlock(produced);
 
         // Gossip CONTRACT_INFO for any newly deployed contracts in this block
-        const Block& produced = g_chain.lastBlock();
         for (int i = 0; i < produced.header.txCount; i++) {
             if (produced.txns[i].type == TxType::DEPLOY) {
                 Contract* c = g_chain.findContract(produced.txns[i].data);
@@ -1110,7 +1149,7 @@ void checkBlockProduction() {
         }
 
         g_consensus.updateRole(g_chain.staking);
-        g_led.flashColor(0, 0, 80, 500);
+        g_led.flashProduced();
     }
 }
 
@@ -1147,12 +1186,13 @@ void trySync() {
         Serial0.printf("[Sync] Block #%d applied. Height: %d\n",
                       ourHeight, g_chain.height());
         g_consensus.updateRole(g_chain.staking);
-        g_led.flashSync();
+        g_led.flashValidation();
         return;
     }
 
     if (result != 2) {
         Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", ourHeight, result);
+        g_led.flashReject();
         return;
     }
 
@@ -1214,8 +1254,10 @@ void trySync() {
                 Serial0.printf("[Sync] Reorg applied #%d, height=%d\n",
                               idx, g_chain.height());
                 g_consensus.updateRole(g_chain.staking);
+                g_led.flashValidation();
             } else {
                 Serial0.printf("[Sync] Reorg: block #%d failed validation\n", idx);
+                g_led.flashReject();
                 break;
             }
         }
@@ -1249,8 +1291,10 @@ void trySync() {
         if (r == 0) {
             Serial0.printf("[Sync] Applied #%d, height=%d\n", idx, g_chain.height());
             g_consensus.updateRole(g_chain.staking);
+            g_led.flashValidation();
         } else {
             Serial0.printf("[Sync] Block #%d rejected (code=%d)\n", idx, r);
+            g_led.flashReject();
             break;
         }
     }
@@ -1520,6 +1564,7 @@ void handleSerial() {
         Transaction tx = buildTx(TxType::FAUCET);
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashFaucet();
         Serial0.println("[TX] Faucet request submitted (next block)");
     }
     else if (cmd == "balance") {
@@ -1552,12 +1597,14 @@ void handleSerial() {
         tx.value = arg1.toInt();
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashUnstake();
         Serial0.println("[TX] Unstake submitted (next block)");
     }
     else if (cmd == "claim") {
         Transaction tx = buildTx(TxType::CLAIM);
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashClaim();
         Serial0.println("[TX] Claim submitted (next block)");
     }
     else if (cmd == "transfer") {
@@ -1568,6 +1615,7 @@ void handleSerial() {
         NodeID target;
         if (!findNodeByShort(arg1, target)) {
             Serial0.println("Node not found: " + arg1);
+            g_led.flashTxFail();
             return;
         }
         Transaction tx = buildTx(TxType::TRANSFER);
@@ -1575,6 +1623,7 @@ void handleSerial() {
         tx.value = arg2.toInt();
         g_chain.addToMempool(tx);
         g_net.broadcastTx(tx);
+        g_led.flashTransfer();
         Serial0.printf("[TX] Transfer %u to %s submitted (next block)\n",
                       tx.value, target.toShortStr().c_str());
     }

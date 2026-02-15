@@ -240,6 +240,7 @@ public:
                       uint8_t callDepth = 0) {
         _pc = 0; _sp = 0; _gas = MVM_MAX_GAS; _gasUsed = 0;
         _status = VM_RUNNING; _eventCount = 0; _logCount = 0;
+        _dominantOp = 0; _dominantCost = 0;
         memset(_memory, 0, sizeof(_memory));
         memcpy(_snap, contract.storage, sizeof(contract.storage));
         uint32_t balSnap = contract.balance;
@@ -255,6 +256,9 @@ public:
             uint32_t cost = _gasCost(op, mod);
             if (_gas < cost) { _status = VM_ERR_OUT_OF_GAS; break; }
             _gas -= cost; _gasUsed += cost;
+
+            // Track highest-cost opcode for LED feedback
+            if (cost > _dominantCost) { _dominantCost = cost; _dominantOp = op; }
 
             switch (op) {
 
@@ -634,6 +638,10 @@ public:
     uint8_t logCount() const { return _logCount; }
     const MVMLog& log(uint8_t i) const { return _logs[i]; }
 
+    // Opcode tracking: returns the most "significant" opcode executed
+    // (highest gas-cost opcode, representing the dominant operation)
+    uint8_t dominantOpcode() const { return _dominantOp; }
+
 private:
     uint32_t    _stack[MVM_MAX_STACK];
     uint8_t     _sp;
@@ -645,6 +653,8 @@ private:
     uint8_t     _logCount;
     StorageSlot _snap[MVM_MAX_STORAGE];
     uint32_t    _memory[MVM_MAX_MEMORY];
+    uint8_t     _dominantOp;
+    uint32_t    _dominantCost;
 
     // Per-opcode gas cost lookup
     static uint32_t _gasCost(uint8_t op, uint8_t mod) {
