@@ -39,7 +39,7 @@
 #define MIN_GAS_PRICE       1
 #define DEFAULT_GAS_LIMIT   8000
 #define TX_BASE_GAS         21000
-#define DEPLOY_GAS_PER_BYTE 200
+#define DEPLOY_GAS_PER_BYTE 1
 #define FAUCET_FEE          0
 
 #define MAX_BLOCKS          20

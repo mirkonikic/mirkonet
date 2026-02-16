@@ -110,6 +110,7 @@ struct Transaction {
 
 #define DEPLOY_CACHE_SIZE 4
 
+// cache deployed code
 struct DeployCache {
     struct Entry {
         char     name[16];

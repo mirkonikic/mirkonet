@@ -191,8 +191,6 @@ public:
         return activeSet[slot % activeCount] == who;
     }
 
-    // --- Slashing ---
-
     // Slash a validator for misbehavior. Returns amount slashed.
     // slashPct: percentage of stake to slash (e.g., 10 = 10%)
     uint32_t slash(const NodeID& who, uint32_t slashPct, uint32_t currentEpochNum) {

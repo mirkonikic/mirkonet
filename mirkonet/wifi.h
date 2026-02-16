@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <DNSServer.h>
+#include <esp_mac.h>
 #include "config.h"
 
 // MirkoNet WiFi Manager + Web Dashboard
@@ -41,10 +42,11 @@ public:
         Serial.println("[WiFi] === WiFi Manager Starting ===");
 
         uint8_t mac[6];
-        WiFi.macAddress(mac);
+        //WiFi.macAddress(mac);
+        esp_efuse_mac_get_default(mac);
         char buf[32];
         snprintf(buf, sizeof(buf), "mnet_node_%02X%02X%02X",
-                 mac[3], mac[4], mac[5]);
+                 mac[0], mac[1], mac[2]);
         apName = String(buf);
         Serial.println("[WiFi] AP name: " + apName);
 

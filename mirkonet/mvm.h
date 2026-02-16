@@ -266,6 +266,8 @@ public:
         memcpy(_snap, contract.storage, sizeof(contract.storage));
         uint32_t balSnap = contract.balance;
 
+        Serial0.printf("[MVM] Executing contract '%s' with %d bytes of code\n", contract.name, contract.codeLen);
+
         while (_status == VM_RUNNING) {
             if (_pc >= contract.codeLen) { _status = VM_ERR_CODE_BOUNDS; break; }
 
@@ -703,6 +705,9 @@ public:
             memcpy(contract.storage, _snap, sizeof(contract.storage));
             contract.balance = balSnap;
         }
+
+        Serial0.printf("[MVM] Execution finished with status: %s, gas used: %d\n", statusName(_status), _gasUsed);
+
         return _status;
     }
 

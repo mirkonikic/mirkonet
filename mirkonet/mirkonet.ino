@@ -10,7 +10,6 @@
 #include "network.h"
 #include "led.h"
 #include "wifi.h"
-#include "code_store.h"
 
 
 NodeID          g_selfId;
@@ -31,14 +30,12 @@ static Block g_scratchBlock;
 bool   g_assembling = false;
 String g_asmBuffer, g_asmName;
 
-// (GENESIS_NODES removed — genesis is now hardcoded, see config.h)
-
 Transaction buildTx(TxType type) {
     Transaction tx;
     memset(&tx, 0, sizeof(tx));
     tx.type = type;
     tx.sender = g_selfId;
-    tx.to = ZERO_NODE;          // Ethereum: zero = contract deploy / system tx
+    tx.to = ZERO_NODE;
     tx.nonce = g_txNonce++;
     tx.timestamp = millis();
     tx.gasLimit = DEFAULT_GAS_LIMIT;
@@ -46,12 +43,9 @@ Transaction buildTx(TxType type) {
     return tx;
 }
 
-// Forward declarations
 bool findNodeByShort(const String& shortId, NodeID& out);
 void deployExamples();
 void deployRelay();
-
-// ==================== Web Dashboard Callbacks ====================
 
 String webGetStats() {
     uint32_t staked = 0;
@@ -521,11 +515,6 @@ void setup() {
 
 
     Serial0.println("[Init] Step 2/7: Flash storage...");
-    if (CodeStore::begin()) {
-        Serial0.println("[Init]   SPIFFS OK");
-    } else {
-        Serial0.println("[Init]   SPIFFS FAILED - bytecode won't persist across reboots");
-    }
 
     Serial0.println("[Init] Step 3/7: WiFi...");
     bool wifiOk = g_wifi.begin();
@@ -694,8 +683,7 @@ void loop() {
     if (staUp) {
         if (now - g_lastDiscovery >= DISCOVERY_INTERVAL) {
             g_lastDiscovery = now;
-            g_net.sendDiscovery(g_chain.height(), g_consensus.selfRole,
-                                g_chain.currentEpoch());
+            g_net.sendDiscovery(g_chain.height(), g_consensus.selfRole, g_chain.currentEpoch());
             g_led.flashDiscoverySend();
         }
 
@@ -1090,22 +1078,6 @@ void fetchCodeForContract(Contract* c) {
         }
     }
 
-    // Try loading from persistent flash storage (survives reboots)
-    {
-        uint8_t flashBuf[MVM_MAX_CODE];
-        uint16_t flashLen = CodeStore::load(c->name, flashBuf, MVM_MAX_CODE);
-        if (flashLen > 0) {
-            if (c->cacheCode(flashBuf, flashLen, !weAreHost)) {
-                Serial0.printf("[Code] Recovered '%s' from flash (%dB, hash verified%s)\n",
-                              c->name, flashLen, weAreHost ? "" : ", temporary");
-                g_led.flashCodeCache();
-                return;
-            } else {
-                Serial0.printf("[Code] Flash data for '%s' has bad hash, ignoring\n", c->name);
-            }
-        }
-    }
-
     // If we are the host, we should have it in cache - nothing more to try locally
     if (weAreHost) {
         Serial0.printf("[Code] We host '%s' but lost bytecode, asking peers...\n", c->name);
@@ -1132,7 +1104,6 @@ void fetchCodeForContract(Contract* c) {
         if (g_net.requestCode(hostIP, c->name, codeBuf, codeLen)) {
             // Non-host nodes cache temporarily for validation only
             if (c->cacheCode(codeBuf, codeLen, !weAreHost)) {
-                if (weAreHost) CodeStore::save(c->name, codeBuf, codeLen);
                 Serial0.printf("[Code] Fetched '%s' from host (%dB, hash verified, %s)\n",
                               c->name, codeLen,
                               weAreHost ? "permanent" : "temporary for validation");
@@ -1154,7 +1125,6 @@ void fetchCodeForContract(Contract* c) {
         uint16_t codeLen;
         if (g_net.requestCode(g_net.peers[i].ip, c->name, codeBuf, codeLen)) {
             if (c->cacheCode(codeBuf, codeLen, !weAreHost)) {
-                if (weAreHost) CodeStore::save(c->name, codeBuf, codeLen);
                 Serial0.printf("[Code] Fetched '%s' from peer %s (%dB, hash verified, %s)\n",
                               c->name, g_net.peers[i].nodeId.toShortStr().c_str(), codeLen,
                               weAreHost ? "permanent" : "temporary for validation");

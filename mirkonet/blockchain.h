@@ -2,7 +2,6 @@
 #include "types.h"
 #include "mvm.h"
 #include "staking.h"
-#include "code_store.h"
 
 // LED feedback callback for validation stages
 // Set by mirkonet.ino to wire blockchain validation events to NeoPixel LED.
@@ -13,7 +12,6 @@
 //   9=pruning, 10=epoch election
 typedef void (*BlockchainLedCallback)(uint8_t event, uint8_t param);
 static BlockchainLedCallback g_blockchainLedCb = nullptr;
-
 
 struct AccountBalance {
     NodeID   owner;
@@ -391,7 +389,8 @@ public:
         if (contractCount >= MAX_CONTRACTS) return nullptr;
         if (findContract(name)) return nullptr;
         Contract& c = contracts[contractCount++];
-        c.init(name, code, codeLen, deployer, true);        Serial0.printf("[Deploy] '%s' at %s by %s (%d bytes)\n",
+        c.init(name, code, codeLen, deployer, true);        
+        Serial0.printf("[Deploy] '%s' at %s by %s (%d bytes)\n",
                       name, c.addr.toHex().c_str(),
                       deployer.toShortStr().c_str(), codeLen);
         return &c;
@@ -400,7 +399,8 @@ public:
 
     struct TxResult {
         bool      success;
-        bool      needsCode;        MVMStatus vmStatus;
+        bool      needsCode;        
+        MVMStatus vmStatus;
         uint32_t  gasUsed;
         uint32_t  fee;
         String    message;
@@ -443,7 +443,6 @@ public:
                     c->host = tx.sender;
                     c->hasCode = true;
                     c->codeHash = entry->codeHash;
-                    CodeStore::save(tx.data, entry->code, entry->codeLen);
                     chargeFee(tx.sender, r.fee);
                     r.success = true;
                     r.message = String("Deployed '") + tx.data + "' hosted locally (" +

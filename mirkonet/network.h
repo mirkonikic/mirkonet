@@ -16,8 +16,7 @@ public:
         _udpGossip.begin(UDP_GOSSIP_PORT);
         _tcpServer.begin(TCP_SYNC_PORT);
         _tcpServer.setNoDelay(true);
-        Serial0.printf("[Net] Listening UDP:%d,%d TCP:%d\n",
-                      UDP_DISCOVERY_PORT, UDP_GOSSIP_PORT, TCP_SYNC_PORT);
+        Serial0.printf("[Net] Listening UDP:%d,%d TCP:%d\n", UDP_DISCOVERY_PORT, UDP_GOSSIP_PORT, TCP_SYNC_PORT);
         return true;
     }
 
@@ -27,8 +26,7 @@ public:
         return nullptr;
     }
 
-    PeerInfo* addOrUpdatePeer(const NodeID& id, IPAddress ip,
-                               uint32_t height, NodeRole role) {
+    PeerInfo* addOrUpdatePeer(const NodeID& id, IPAddress ip, uint32_t height, NodeRole role) {
         if (id == selfId) return nullptr;
         PeerInfo* p = findPeer(id);
         if (p) {
@@ -108,8 +106,7 @@ public:
 
     // Gossip contract metadata so all nodes know which node hosts each contract.
     // This allows nodes to fetch bytecode from the host when they need to validate.
-    void broadcastContractInfo(const char* name, const NodeID& host,
-                                const Hash256& codeHash, uint16_t codeLen) {
+    void broadcastContractInfo(const char* name, const NodeID& host, const Hash256& codeHash, uint16_t codeLen) {
         uint8_t buf[128]; size_t off = 0;
         buf[off++] = (uint8_t)MsgType::CONTRACT_INFO;
         memcpy(buf+off, selfId.id, 6); off += 6;

@@ -69,11 +69,6 @@ public:
 #endif
     }
 
-    // ============================================================
-    //  SYSTEM EVENT FLASHES - every event gets its own LED color
-    // ============================================================
-
-    // --- [Init] Boot steps (rainbow progression) ---
     void flashInitLed()      { flashColor(40, 20,  0, 200); }  // Warm orange: LED init
     void flashInitWifi()     { flashColor( 0, 20, 60, 300); }  // Blue: WiFi init
     void flashInitIdentity() { flashColor(30,  0, 50, 200); }  // Purple: identity
@@ -82,7 +77,6 @@ public:
     void flashInitNetwork()  { flashColor(20, 40, 20, 200); }  // Green: network init
     void flashInitComplete() { flashColor(60, 60, 60, 600); }  // Bright white: boot done
 
-    // --- [Validate] Block validation stages ---
     void flashValidation()   { flashColor( 0, 70,  0, 250); }  // Bright green: validation pass
     void flashValidateIndex(){ flashColor( 0, 50, 10, 150); }  // Green: index check OK
     void flashValidateHash() { flashColor( 0, 60, 20, 150); }  // Green-lime: hash check OK
@@ -97,14 +91,12 @@ public:
     void flashRejectCode()   { flashColor(50, 10, 20, 300); }  // Dark rose: missing bytecode
     void flashRejectState()  { flashColor(80,  0, 40, 400); }  // Red-magenta: state root mismatch
 
-    // --- [Gossip] Network message types ---
     void flashGossipHeartbeat()  { flashColor(10, 30, 30, 100); }  // Dim cyan: heartbeat
     void flashGossipTx()         { flashColor(50, 50, 50, 150); }  // White: tx received
     void flashGossipBlock()      { flashColor(30, 60,  0, 200); }  // Yellow-green: block announcement
     void flashGossipContract()   { flashColor( 0, 40, 30, 200); }  // Teal: contract info learned
     void flashGossipBlockAnn()   { flashColor(40, 30,  0, 150); }  // Dim orange: block announce
 
-    // --- [Sync] Synchronization events ---
     void flashSyncStart()    { flashColor(40,  0, 60, 300); }  // Magenta: sync starting
     void flashSync()         { flashColor(40,  0, 60, 200); }  // Purple: sync progress
     void flashSyncApplied()  { flashColor( 0, 60, 10, 200); }  // Green: block applied during sync
@@ -115,7 +107,6 @@ public:
     void flashSyncDone()     { flashColor( 0, 50, 30, 300); }  // Green-teal: sync completed
     void flashSyncFail()     { flashColor(60,  0, 10, 300); }  // Dark red: sync download failed
 
-    // --- [Discovery] Peer discovery ---
     void flashPeer()         { flashColor( 0, 50, 30, 250); }  // Teal: new peer joined
     void flashDiscoverySend(){ flashColor(10, 25, 20, 100); }  // Dim teal: sending discovery
     void flashGenesisOk()    { flashColor( 0, 60, 30, 400); }  // Green-teal: genesis sync OK
@@ -123,40 +114,33 @@ public:
     void flashGenesisAdopt() { flashColor(40, 40, 10, 350); }  // Warm gold: adopting peer genesis
     void flashGenesisNode()  { flashColor(30, 40, 10, 200); }  // Olive: added genesis node
 
-    // --- [Alive] Periodic heartbeat ---
     void flashAlive()        { flashColor( 5, 15,  5, 100); }  // Very dim green: alive tick
 
-    // --- [TCP] Serving requests ---
     void flashTcpBlockReq()  { flashColor(15, 15, 40, 150); }  // Dim blue: serving block
     void flashTcpCodeReq()   { flashColor(15, 30, 15, 150); }  // Dim green: serving code
     void flashTcpSent()      { flashColor(30, 30, 30, 100); }  // Dim white: data sent
 
-    // --- [Code] Bytecode fetch ---
     void flashCodeCache()    { flashColor(10, 40, 20, 150); }  // Green: loaded from cache
     void flashCodeFetch()    { flashColor( 0, 30, 50, 200); }  // Blue: fetching from network
     void flashCodeOk()       { flashColor( 0, 50, 20, 200); }  // Green: fetch success
     void flashCodeFail()     { flashColor(60, 10,  0, 300); }  // Red: fetch failed
     void flashCodeHashBad()  { flashColor(80,  0, 20, 350); }  // Red-pink: hash mismatch
 
-    // --- [WiFi] Connection events ---
     void flashWifiConnect()  { flashColor( 0, 50,  0, 300); }  // Green: STA connected
     void flashWifiDisconnect(){ flashColor(60, 10, 0, 300); }  // Red: STA disconnected
     void flashWifiReconnect(){ flashColor(50, 30,  0, 250); }  // Orange: attempting reconnect
 
-    // --- [Block] Block production & acceptance ---
     void flashBlock()        { flashColor( 0, 60,  0, 300); }  // Green: block accepted
     void flashProduced()     { flashColor(20, 20, 80, 500); }  // Blue-white: we produced a block
     void flashProducing()    { flashColor(10, 10, 60, 200); }  // Blue: starting production
     void flashEpoch()        { flashColor(60,  0, 60, 500); }  // Purple: epoch transition
     void flashPrune()        { flashColor(40, 30, 10, 200); }  // Amber: chain pruning
 
-    // --- [Staking] Staking events ---
     void flashSlash()        { flashColor(80,  0,  0, 600); }  // Deep red: slashing event
     void flashElection()     { flashColor(50, 10, 60, 400); }  // Bright purple: validator election
     void flashJailed()       { flashColor(60,  0, 20, 400); }  // Dark red: validator jailed
     void flashDowntime()     { flashColor(50, 20,  0, 300); }  // Dark orange: missed blocks
 
-    // --- Transaction type flashes ---
     void flashTxReceived()   { flashColor(50, 50, 50, 150); }  // White: any tx
     void flashTransfer()     { flashColor(70, 70, 70, 250); }  // Bright white: transfer
     void flashDeploy()       { flashColor( 0, 80, 40, 400); }  // Green-cyan: deploy
@@ -168,7 +152,6 @@ public:
     void flashData()         { flashColor(40, 40, 60, 200); }  // Blue-grey: data tx
     void flashTxFail()       { flashColor(80, 10,  0, 300); }  // Red-orange: tx failed
 
-    // --- Flash for transaction type (auto-dispatch) ---
     void flashForTxType(uint8_t txType) {
         switch (txType) {
             case 0x01: flashData(); break;
@@ -182,12 +165,6 @@ public:
             default:   flashTxReceived(); break;
         }
     }
-
-    // ============================================================
-    //  MVM OPCODE FLASHES - every opcode gets its own unique color
-    // ============================================================
-    //  28 opcodes (0x00-0x1B), each with a distinct RGB value
-    //  spread across the full color wheel for maximum distinction.
 
     void flashForOpcode(uint8_t op) {
         // Unique color per 5-bit opcode
@@ -228,7 +205,6 @@ public:
         }
     }
 
-    // --- VM execution result flash ---
     void flashVMStatus(uint8_t vmStatus) {
         switch (vmStatus) {
             case 1:  flashValidation(); break;             // VM_HALTED (success)
@@ -279,7 +255,6 @@ public:
             }
         }
 
-        // Update every 30ms for smooth animations
         if (now - _lastUpdate < 30) return;
         _lastUpdate = now;
 
