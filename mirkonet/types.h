@@ -282,6 +282,23 @@ struct Checkpoint {
         return sha256(buf, off);
     }
 
+    // Hash of the canonical, deterministic content only — excludes timestamp
+    // because millis() differs per node and per boot.  This is the hash used
+    // for the prevCheckpoint chain so that two nodes that pruned the same
+    // blocks produce the same fingerprint even if they did it at different
+    // wall-clock times.
+    Hash256 contentHash() const {
+        uint8_t buf[144];
+        size_t off = 0;
+        memcpy(buf + off, &fromBlock, 4); off += 4;
+        memcpy(buf + off, &toBlock, 4); off += 4;
+        memcpy(buf + off, lastBlockHash.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf + off, stateRoot.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf + off, chainMerkle.bytes, HASH_SIZE); off += HASH_SIZE;
+        memcpy(buf + off, prevCheckpoint.bytes, HASH_SIZE); off += HASH_SIZE;
+        return sha256(buf, off);
+    }
+
     void print() const {
         if (!used) return;
         Serial0.printf("  Checkpoint [%d..%d] last=%s state=%s merkle=%s\n",

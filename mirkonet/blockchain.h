@@ -285,18 +285,36 @@ public:
         // compare against, so we accept on TOFU and log it clearly.  Subsequent syncs
         // are fully verified.
         if (checkpointCount > 0) {
-            Hash256 expectedPrev = checkpoints[checkpointCount - 1].hash();
-            if (ckpt.prevCheckpoint != expectedPrev) {
-                Serial0.printf("[Checkpoint] REJECT: prevCheckpoint chain broken\n");
-                Serial0.printf("  Our latest ckpt hash:    %s\n", expectedPrev.toShort().c_str());
-                Serial0.printf("  Received prevCheckpoint: %s\n", ckpt.prevCheckpoint.toShort().c_str());
-                return false;
+            const Checkpoint& latest = checkpoints[checkpointCount - 1];
+            if (ckpt.fromBlock == latest.toBlock + 1) {
+                // Direct continuation: the incoming checkpoint covers exactly the
+                // blocks immediately after our last one.  Strictly verify the
+                // prevCheckpoint hash so we know it was built on our exact chain.
+                Hash256 expectedPrev = latest.contentHash();
+                if (ckpt.prevCheckpoint != expectedPrev) {
+                    Serial0.printf("[Checkpoint] REJECT: prevCheckpoint chain broken "
+                                  "[%d..%d]->?->[%d..%d]\n",
+                                  latest.fromBlock, latest.toBlock,
+                                  ckpt.fromBlock, ckpt.toBlock);
+                    Serial0.printf("  Expected: %s\n", expectedPrev.toShort().c_str());
+                    Serial0.printf("  Got:      %s\n", ckpt.prevCheckpoint.toShort().c_str());
+                    return false;
+                }
+                Serial0.printf("[Checkpoint] prevCheckpoint chain OK [%d..%d]->[%d..%d]\n",
+                              latest.fromBlock, latest.toBlock,
+                              ckpt.fromBlock, ckpt.toBlock);
+            } else {
+                // Gap between our latest checkpoint and the received one (e.g. we
+                // pruned [0-7] locally but peer's latest covers [16-23]).  We cannot
+                // verify the intermediate links, so accept on TOFU and log clearly.
+                Serial0.printf("[Checkpoint] Gap: our=[%d..%d] recv=[%d..%d], "
+                              "accepting on TOFU\n",
+                              latest.fromBlock, latest.toBlock,
+                              ckpt.fromBlock, ckpt.toBlock);
             }
-            Serial0.printf("[Checkpoint] prevCheckpoint chain OK -> %s\n",
-                          expectedPrev.toShort().c_str());
         } else {
-            Serial0.printf("[Checkpoint] First checkpoint (TOFU), hash=%s\n",
-                          ckpt.hash().toShort().c_str());
+            Serial0.printf("[Checkpoint] First checkpoint (TOFU), contentHash=%s\n",
+                          ckpt.contentHash().toShort().c_str());
         }
 
         return initFromCheckpoint(ckpt, accts, acctCnt, stakeSnap, stakeCnt,
@@ -1123,7 +1141,7 @@ public:
 
         Hash256 prevCkpt = ZERO_HASH;
         if (checkpointCount > 0)
-            prevCkpt = checkpoints[checkpointCount - 1].hash();
+            prevCkpt = checkpoints[checkpointCount - 1].contentHash();
 
         Checkpoint ckpt;
         ckpt.fromBlock     = chainOffset;
