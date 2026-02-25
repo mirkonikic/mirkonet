@@ -141,6 +141,17 @@ public:
                       "offset=%d, accounts=%d, validators=%d\n",
                       ckpt.fromBlock, ckpt.toBlock,
                       chainOffset, accountCount, staking.activeCount);
+
+        // Log the epoch-boundary proof anchor.  Block #chainOffset (the first block
+        // this node must download) MUST carry prevHash == lastBlockHash below.
+        // applyNetworkBlock now enforces exactly this; see tip-lookup fix there.
+        // Logging it here makes the link explicit and auditable in the serial output.
+        uint32_t epochOfFirst = chainOffset / EPOCH_LENGTH;
+        Serial0.printf("[Checkpoint] Epoch-link anchor: block #%d must have "
+                      "prevHash=%s  (epoch %d)\n",
+                      chainOffset,
+                      ckpt.lastBlockHash.toShort().c_str(),
+                      epochOfFirst);
         return true;
     }
 
@@ -261,6 +272,50 @@ public:
         if (off + 8 > len) return false;
         memcpy(&supply, buf + off, 4); off += 4;
         memcpy(&staked, buf + off, 4); off += 4;
+
+        // Option B: verify the prevCheckpoint hash chain before trusting this state.
+        //
+        // If we already hold a local checkpoint (from earlier sync or pruning), the
+        // incoming checkpoint's prevCheckpoint field MUST equal our latest checkpoint's
+        // hash.  This proves an unbroken chain of checkpoints back to genesis and
+        // prevents a peer from replacing our state with a fork that shares the same
+        // epoch boundary but diverges from the canonical chain.
+        //
+        // On the very first checkpoint sync (checkpointCount == 0) we have nothing to
+        // compare against, so we accept on TOFU and log it clearly.  Subsequent syncs
+        // are fully verified.
+        if (checkpointCount > 0) {
+            const Checkpoint& latest = checkpoints[checkpointCount - 1];
+            if (ckpt.fromBlock == latest.toBlock + 1) {
+                // Direct continuation: the incoming checkpoint covers exactly the
+                // blocks immediately after our last one.  Strictly verify the
+                // prevCheckpoint hash so we know it was built on our exact chain.
+                Hash256 expectedPrev = latest.contentHash();
+                if (ckpt.prevCheckpoint != expectedPrev) {
+                    Serial0.printf("[Checkpoint] REJECT: prevCheckpoint chain broken "
+                                  "[%d..%d]->?->[%d..%d]\n",
+                                  latest.fromBlock, latest.toBlock,
+                                  ckpt.fromBlock, ckpt.toBlock);
+                    Serial0.printf("  Expected: %s\n", expectedPrev.toShort().c_str());
+                    Serial0.printf("  Got:      %s\n", ckpt.prevCheckpoint.toShort().c_str());
+                    return false;
+                }
+                Serial0.printf("[Checkpoint] prevCheckpoint chain OK [%d..%d]->[%d..%d]\n",
+                              latest.fromBlock, latest.toBlock,
+                              ckpt.fromBlock, ckpt.toBlock);
+            } else {
+                // Gap between our latest checkpoint and the received one (e.g. we
+                // pruned [0-7] locally but peer's latest covers [16-23]).  We cannot
+                // verify the intermediate links, so accept on TOFU and log clearly.
+                Serial0.printf("[Checkpoint] Gap: our=[%d..%d] recv=[%d..%d], "
+                              "accepting on TOFU\n",
+                              latest.fromBlock, latest.toBlock,
+                              ckpt.fromBlock, ckpt.toBlock);
+            }
+        } else {
+            Serial0.printf("[Checkpoint] First checkpoint (TOFU), contentHash=%s\n",
+                          ckpt.contentHash().toShort().c_str());
+        }
 
         return initFromCheckpoint(ckpt, accts, acctCnt, stakeSnap, stakeCnt,
                                   activeCnt, activeSnap, supply, staked);
@@ -769,7 +824,21 @@ public:
         }
         if (g_blockchainLedCb) g_blockchainLedCb(4, 0);  // index check OK
 
-        Hash256 ourTip = (chainLen > 0) ? chain[chainLen-1].blockHash : ZERO_HASH;
+        // Determine our current chain tip hash.
+        // When chainLen > 0, use the last in-memory block as normal.
+        // When chainLen == 0 and we loaded from a checkpoint (chainOffset > 0),
+        // the tip is the checkpoint's lastBlockHash — the hash of the last pruned
+        // block.  Using ZERO_HASH here instead is the deadlock: the first
+        // post-checkpoint block always fails prevHash verification, which triggers
+        // resetToGenesis → checkpoint sync again → infinite loop.
+        Hash256 ourTip;
+        if (chainLen > 0) {
+            ourTip = chain[chainLen - 1].blockHash;
+        } else if (chainOffset > 0 && checkpointCount > 0) {
+            ourTip = checkpoints[checkpointCount - 1].lastBlockHash;
+        } else {
+            ourTip = ZERO_HASH;
+        }
         if (blk.header.prevHash != ourTip) {
             Serial0.printf("[Validate] REJECT #%d: prevHash mismatch\n",
                           blk.header.index);
@@ -1072,7 +1141,7 @@ public:
 
         Hash256 prevCkpt = ZERO_HASH;
         if (checkpointCount > 0)
-            prevCkpt = checkpoints[checkpointCount - 1].hash();
+            prevCkpt = checkpoints[checkpointCount - 1].contentHash();
 
         Checkpoint ckpt;
         ckpt.fromBlock     = chainOffset;

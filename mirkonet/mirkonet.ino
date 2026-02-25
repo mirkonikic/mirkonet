@@ -1321,7 +1321,12 @@ void trySync() {
                 g_consensus.updateRole(g_chain.staking);
                 g_led.flashSyncApplied();
 
-                // Now download recent blocks from checkpoint onwards
+                // Now download recent blocks from checkpoint onwards.
+                // The first block (i == 0) proves the epoch-boundary link:
+                // its prevHash must equal the checkpoint's lastBlockHash.
+                // applyNetworkBlock enforces this; a mismatch returns code 2
+                // (prevHash fail) which aborts the loop immediately.
+                bool epochLinkProved = false;
                 for (uint32_t i = 0; i < 10; i++) {
                     uint32_t idx = g_chain.height();
                     if (idx >= peerHeight) break;
@@ -1329,6 +1334,15 @@ void trySync() {
                     prefetchCodeForTxns(g_scratchBlock.txns, g_scratchBlock.header.txCount);
                     uint8_t r = g_chain.applyNetworkBlock(g_scratchBlock);
                     if (r == 0) {
+                        if (!epochLinkProved) {
+                            // First block accepted: epoch-boundary link is proven.
+                            // block.prevHash == checkpoint.lastBlockHash was enforced
+                            // by applyNetworkBlock's tip lookup — log it for audit.
+                            Serial0.printf("[Sync] Epoch-link PROVED: #%d.prevHash=%s\n",
+                                          g_scratchBlock.header.index,
+                                          g_scratchBlock.header.prevHash.toShort().c_str());
+                            epochLinkProved = true;
+                        }
                         Serial0.printf("[Sync] Applied #%d, height=%d\n", idx, g_chain.height());
                         g_consensus.updateRole(g_chain.staking);
                         g_led.flashSyncApplied();
