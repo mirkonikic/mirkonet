@@ -1197,7 +1197,7 @@ void checkBlockProduction() {
     // During bootstrap, auto-submit faucet + stake
     if (bootstrap) autoBootstrap();
 
-    if (!g_consensus.shouldProduce(g_chain.staking, bootstrap, g_net.peerCount)) {
+    if (!g_consensus.shouldProduce(g_chain.staking, bootstrap, g_net.countAlive())) {
         // Track missed blocks for the expected producer (downtime detection)
         uint32_t currentSlot = g_consensus.getCurrentSlot();
         if (!bootstrap && g_chain.staking.activeCount > 1) {
